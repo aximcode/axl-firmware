@@ -269,16 +269,16 @@ fetch_source() {
     git -C "$t" -c advice.detachedHead=false checkout --quiet --detach "$commit"
     submodules "$t" | (cd "$t" && xargs git submodule update --init --depth 1 --jobs 4 --)
     source_ok "$t" || die "the fetched edk2 does not check out (above)"
-    # Read-only from here on: no build writes into its source.
-    chmod -R a-w "$t"
     if [[ -e "$src" ]]; then
         chmod -R u+w "$src"
         rm -rf "$src"
     fi
-    chmod u+w "$fetch_tmp"
     mv "$t" "$src"
     rm -rf "$fetch_tmp"
     fetch_tmp=""
+    # Read-only from here on: no build writes into its source. (Renaming a
+    # directory needs it writable, so this comes after the rename.)
+    chmod -R a-w "$src"
 }
 
 if [[ -n "$edk2" ]]; then
