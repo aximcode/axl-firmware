@@ -284,6 +284,99 @@ class GuestCloseTests(unittest.TestCase):
             self.assertFalse(g._reader.is_alive())  # pyright: ignore[reportPrivateUsage]
 
 
+# A stand-in for QEMU and the Shell: a prompt; `fs0:\ticks.nsh` prints a
+# tick every 20 ms, 600 of them (or, "fast", 5), then "ticks done" and the
+# prompt; 0x03 while it runs stops it at once ("breaks"), restarts the
+# firmware into a new Shell ("resets"), or is ignored. Typed keys are
+# echoed, as the Shell echoes them; `echo X` says X.
+_FAKE_SHELL = r"""
+import os, sys, threading, time
+mode = sys.argv[1]
+lock = threading.Lock()
+stop = threading.Event()
+def out(s):
+    with lock:
+        os.write(1, s.encode())
+def ticks():
+    for n in range(1, (5 if mode == "fast" else 600) + 1):
+        if stop.is_set():
+            if mode == "breaks":
+                out("Shell> ")
+            return
+        out(f"tick {n}\r\n")
+        time.sleep(0.02)
+    out("ticks done\r\nShell> ")
+out("Shell> ")
+line = b""
+while (c := os.read(0, 1)):
+    if c == b"\x03" and mode == "breaks":
+        stop.set()
+    elif c == b"\x03" and mode == "resets":
+        stop.set()
+        time.sleep(0.05)
+        out("\r\nUEFI Interactive Shell v2.2\r\nPress ESC in 5 seconds to skip startup.nsh\r\nShell> ")
+    elif c == b"\r":
+        out("\r\n")
+        if line == b"fs0:\\" + b"ticks.nsh":
+            stop.clear()
+            threading.Thread(target=ticks, daemon=True).start()
+        elif line.startswith(b"echo "):
+            out(line[5:].decode() + "\r\nShell> ")
+        line = b""
+    else:
+        out(c.decode())
+        line += c
+"""
+
+
+class CtrlCTests(unittest.TestCase):
+    """A serial Ctrl-C must stop a running Shell script within the bound."""
+
+    def guest(self, t: str, mode: str) -> boot.Guest:
+        g = boot.Guest([sys.executable, "-c", _FAKE_SHELL, mode], Path(t), Path(t), "fake", 5)
+        self.addCleanup(g.close)
+        g.prompt()
+        return g
+
+    def test_breaks(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            took = boot.ctrl_c_break(self.guest(t, "breaks"), 2)
+            self.assertLess(took, 2)
+
+    def test_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "ignored")
+            with self.assertRaises(boot.BootError) as err:
+                boot.ctrl_c_break(g, 1)
+            self.assertEqual(
+                str(err.exception).split("\n")[0],
+                "fake: no Shell prompt after a serial Ctrl-C (0x03) to a running script within 1 s; console ends:",
+            )
+
+    def test_restarted(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "resets")
+            with self.assertRaises(boot.BootError) as err:
+                boot.ctrl_c_break(g, 5)
+            self.assertEqual(
+                str(err.exception),
+                "fake: the firmware restarted after a serial Ctrl-C (0x03), instead of breaking the script",
+            )
+
+    def test_ran_to_its_end(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "fast")
+            with self.assertRaises(boot.BootError) as err:
+                boot.ctrl_c_break(g, 5)
+            self.assertEqual(str(err.exception), "fake: a serial Ctrl-C (0x03) did not stop the script: it ran to its end")
+
+    def test_script(self) -> None:
+        self.assertEqual(
+            boot.TICKS,
+            "@echo -off\r\nfor %a run (1 600)\r\n  echo tick %a\r\n  stall 100000\r\nendfor\r\necho ticks done\r\n",
+        )
+
+
 class BootChecksTests(unittest.TestCase):
     """The boot checks refuse a bad setting or a missing QEMU, said."""
 

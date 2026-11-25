@@ -1,8 +1,8 @@
 """The release's boot checks: one image set booted in QEMU, its Shell driven
 over the serial console.
 
-Per arch and flavour, four boots, each from a FAT disk whose removable
-path holds the release's own Shell:
+Per arch and flavour, five boots (and on AARCH64 one per CPU model), each
+from a FAT disk whose removable path holds the release's own Shell:
 
 - serial only: the Shell's `mode` list; a variable written (`setvar -nv`),
   a warm reset, the variable read back (`dmpstore`); SMBIOS type 0's BIOS
@@ -13,7 +13,10 @@ path holds the release's own Shell:
 - virtio-gpu: the `mode` list;
 - bochs-display, without its EDID: the `mode` list, and the GOP
   QemuVideoDxe gives it (its driver managing a device, and a screendump at
-  the firmware's default resolution).
+  the firmware's default resolution);
+- serial only, again: a script that ticks for a minute, broken by a
+  serial Ctrl-C (0x03), which must bring the prompt back within
+  CTRL_C_BOUND (patch 0004).
 
 X64 runs under KVM when /dev/kvm is usable, else TCG; AARCH64 under TCG.
 """
@@ -52,6 +55,25 @@ _DEVICE = {
     "virtio-gpu": "virtio-gpu-pci",
     "bochs-display": "bochs-display,edid=off",
 }
+# A serial Ctrl-C (0x03) must stop a running Shell script and bring the
+# prompt back within this many seconds. Measured with patch 0004 (AlmaLinux
+# 10 x86_64, QEMU 10.0.0): 0.10 s on all four image sets, X64 under KVM and
+# AARCH64 under TCG alike; without it the script runs to its end, a minute
+# later. 10 s, axl-sdk's bound for the same keystroke, leaves a loaded TCG
+# host a hundredfold margin and is still a sixth of the script.
+CTRL_C_BOUND = 10.0
+# The script the Ctrl-C breaks, on the boot disk: a tick every 0.1 s for at
+# least a minute, then "ticks done". The Shell checks for a break between
+# a script's lines.
+TICKS_SCRIPT = "ticks.nsh"
+TICKS = (
+    "@echo -off\r\n"
+    "for %a run (1 600)\r\n"
+    "  echo tick %a\r\n"
+    "  stall 100000\r\n"
+    "endfor\r\n"
+    "echo ticks done\r\n"
+)
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
 _PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
@@ -130,6 +152,17 @@ class Guest:
                     raise BootError(msg)
                 self._cond.wait(min(left, 0.5))
 
+    @property
+    def mark(self) -> int:
+        """Where the next expect starts looking in the console."""
+        with self._cond:
+            return self._mark
+
+    def output(self, start: int, end: int) -> str:
+        """The console between two positions (a mark, a match's start)."""
+        with self._cond:
+            return self._text[start:end]
+
     def send(self, text: str) -> None:
         """Type text on the console."""
         stdin = self.proc.stdin
@@ -149,10 +182,9 @@ class Guest:
     def command(self, line: str) -> str:
         """Run one Shell command; its output, up to the next prompt."""
         self.send(line + "\r")
-        start = self._mark
+        start = self.mark
         m = self.expect(_PROMPT, f"prompt after `{line}`")
-        with self._cond:
-            out = self._text[start : m.start()]
+        out = self.output(start, m.start())
         # Drop the command's own echo.
         return out.split("\n", 1)[1] if "\n" in out else ""
 
@@ -336,6 +368,32 @@ def hex_bytes(out: str) -> str:
     return data.lower()
 
 
+def ctrl_c_break(g: Guest, bound: float = CTRL_C_BOUND) -> float:
+    """Start the ticks script, send a serial Ctrl-C while it runs, and wait
+    for the prompt; the seconds it took. BootError if the prompt did not
+    come within bound, came because the script ran to its end or because
+    the firmware restarted, or the Shell then does not run a command.
+    """
+    g.send(f"fs0:\\{TICKS_SCRIPT}\r")
+    g.expect(re.compile(r"\btick 3\b"), "the ticks script running")
+    sent = time.monotonic()
+    g.send("\x03")
+    start = g.mark
+    m = g.expect(_PROMPT, "Shell prompt after a serial Ctrl-C (0x03) to a running script", bound)
+    took = time.monotonic() - sent
+    between = g.output(start, m.start())
+    if "ticks done" in between:
+        msg = f"{g.name}: a serial Ctrl-C (0x03) did not stop the script: it ran to its end"
+        raise BootError(msg)
+    if "Press ESC in" in between or "UEFI Interactive Shell" in between:
+        msg = f"{g.name}: the firmware restarted after a serial Ctrl-C (0x03), instead of breaking the script"
+        raise BootError(msg)
+    if "ctrl-c-ok" not in g.command("echo ctrl-c-ok"):
+        msg = f"{g.name}: after a serial Ctrl-C (0x03) the Shell did not run `echo`"
+        raise BootError(msg)
+    return took
+
+
 def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Result:
     """Every boot check of s; the transcripts are kept in workdir."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +404,7 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
         boot = esp / "EFI" / "BOOT"
         boot.mkdir(parents=True)
         shutil.copyfile(s.shell, boot / ("BOOTX64.EFI" if s.arch == "x64" else "BOOTAA64.EFI"))
+        (esp / TICKS_SCRIPT).write_bytes(TICKS.encode())
         vars_copy = t / "vars.fd"
         shutil.copyfile(s.vars, vars_copy)
         base = qemu_argv(qemu_dir, s, vars_copy, esp)
@@ -462,6 +521,12 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
                 )
 
         attempt("bochs-display", ["-device", _DEVICE["bochs-display"]], bochs)
+
+        def ctrl_c(g: Guest) -> None:
+            g.prompt()
+            ctrl_c_break(g)
+
+        attempt("ctrl-c", [], ctrl_c)
 
         if s.arch == "aarch64":
             cpus: dict[str, bool] = {}
