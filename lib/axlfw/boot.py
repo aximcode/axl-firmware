@@ -41,7 +41,10 @@ SHAPES = ("serial", "std-vga", "virtio-gpu", "bochs-display")
 # hung after its banner (edk2 issue #11962, fixed by b8df7d9c).
 AARCH64_CPU = "cortex-a57"
 AARCH64_CPUS = ("max", "cortex-a57", "neoverse-v1")
-_DEVICE = {"std-vga": "VGA", "virtio-gpu": "virtio-gpu-pci", "bochs-display": "bochs-display"}
+# std-VGA without its EDID: QemuVideoDxe takes an EDID's preferred mode over
+# PcdVideoHorizontalResolution/Vertical, and QEMU's default EDID asks 1280x800
+# too, so with it the check would measure QEMU, not the firmware's default.
+_DEVICE = {"std-vga": "VGA,edid=off", "virtio-gpu": "virtio-gpu-pci", "bochs-display": "bochs-display"}
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
 _PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
@@ -383,8 +386,8 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
             modes["std-vga"] = text_modes(g.command("mode"))
             w, h, lit = g.screen(Path(tmp) / "std-vga.ppm")
             result.facts["gop_std_vga"] = {"size": [w, h], "drawn": lit}
-            if s.arch == "x64" and (w, h) != GOP_DEFAULT:
-                result.problems.append(f"x64 {s.flavour}: std-VGA's GOP is {w}x{h}, not 1280x800")
+            if (w, h) != GOP_DEFAULT:
+                result.problems.append(f"{s.arch} {s.flavour}: std-VGA's GOP is {w}x{h}, not 1280x800")
             if not lit:
                 result.problems.append(f"{s.arch} {s.flavour}: std-VGA shows nothing (a {w}x{h} screen, all black)")
             g.send("exit\r")
