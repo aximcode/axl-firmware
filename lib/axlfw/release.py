@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, install, licenses as lic_mod
+from axlfw import boot, checks, fv, install, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -265,6 +265,28 @@ def static_checks(stage: Path) -> tuple[dict[str, dict[str, object]], list[str]]
     return verified, problems
 
 
+def volinfo_checks(ws: Path, toolchain: str, stage: Path) -> list[str]:
+    """Each code image read a second way, by the build's VolInfo: the same files.
+
+    VolInfo is the workspace's own (BaseTools/BinWrappers/PosixLike, never
+    a host copy), given the GuidedSectionTools.txt its image's build wrote;
+    its set of FFS file GUIDs must equal the FV walker's (DESIGN §4.23).
+    """
+    bin_dir = ws / "BaseTools" / "BinWrappers" / "PosixLike"
+    problems: list[str] = []
+    for img in IMAGES:
+        code = stage / img.dir / "code.fd"
+        tools = img.build(ws, toolchain) / "FV" / "GuidedSectionTools.txt"
+        try:
+            walker = fv.image_guids(code)
+            second = volinfo.image_guids(code, tools, bin_dir)
+        except (OSError, fv.NotAnImageError, volinfo.VolInfoError) as err:
+            problems.append(f"{img.dir}: the VolInfo cross-check: {err}")
+            continue
+        problems += volinfo.compare(code, walker, second)
+    return problems
+
+
 def _setting(name: str, default: str, kind: type[int] | type[float], what: str) -> int | float | str:
     """A positive number from the environment, or what is wrong with it."""
     value = os.environ.get(name, default)
@@ -332,6 +354,7 @@ def assemble(a: AssembleArgs) -> int:
     problems = stage_images(a.ws, a.toolchain, stage)
     verified, more = static_checks(stage)
     problems += more
+    problems += volinfo_checks(a.ws, a.toolchain, stage)
     debug: dict[str, dict[str, object]] = {}
     for img in IMAGES:
         facts, more = checks.build_facts(img.build(a.ws, a.toolchain), img.arch, img.flavour)
@@ -340,7 +363,7 @@ def assemble(a: AssembleArgs) -> int:
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         return 1
-    print("+ static checks passed: drivers, absent files, Shells, AutoGen", flush=True)
+    print("+ static checks passed: drivers, absent files, VolInfo agrees with the FV walker, Shells, AutoGen", flush=True)
     measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs")
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)

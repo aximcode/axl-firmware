@@ -431,6 +431,44 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       behaviour is the same. So X64 at this tag is reproducible except
       for that one module (§5.2); AARCH64 not at all.
 
+23. **The FV walker cross-checked by VolInfo** (owner, 2026-11-25, for r2:
+    two independent parsers must agree). Every check of what an image
+    holds rests on one parser, uefi_firmware (§4.15). Before packing, each
+    code image is read again by edk2's own VolInfo, from the build's
+    workspace BaseTools (never a host copy), and the two sets of FFS file
+    GUIDs must be equal; the release fails if they are not.
+    - *How VolInfo is run at the pin.* It reads one volume per run
+      (`--offset`; X64's `code.fd` has two top-level volumes,
+      FVMAIN_COMPACT and SECFV, AARCH64's one, at 0x1000), found by their
+      `_FVH` headers and skipped whole. It decodes a GUID-defined (LZMA)
+      section only with the tool `GuidedSectionTools.txt` names, and at
+      edk2-stable202611 it takes that file from beside the file it reads
+      (`LoadGuidedSectionToolsTxt`; `-x` is a GUID cross-reference, not
+      this). So the image is copied into a temporary directory with the
+      `GuidedSectionTools.txt` its build wrote into `FV/`, and run with
+      the workspace's `BinWrappers/PosixLike` first on PATH (for
+      `LzmaCompress -d`). Without the file it says
+      "EFI_SECTION_GUID_DEFINED cannot be parsed".
+    - *Strict parsing.* VolInfo's output is for people. Every line must
+      match one of the forms it writes for these images (header fields,
+      file and section fields, depex opcodes, the a-priori lists, section
+      start and end markers); the `File Name:` lines must add up to the
+      "There are a total of N files in this/the child FV" totals; one
+      "this FV" total per run; a non-zero exit or anything on stderr fails.
+      The decompressor prints "Decoding" to the same stdout, unbuffered,
+      so it lands inside whatever line VolInfo had buffered: it is cut out
+      before parsing. VolInfo ignores its decompressor's exit status
+      (`system()` in `VolInfo.c`) and writes its own errors to stdout with
+      status 2, so a decode that failed in silence shows only as an empty
+      encapsulated section, with totals that still add up: an empty
+      encapsulation fails, and every LZMA GUID-defined section must have
+      its "Decoding". edk2's wrappers run `$EDK_TOOLS_PATH/Source/C/bin/`
+      when that is set, so it is set to the workspace's BaseTools, never
+      the caller's. Pad files (all-F GUID) are dropped, as the walker
+      drops them.
+    - *Measured* on r2's four images (AlmaLinux 10 x86_64): X64 150 GUIDs,
+      AARCH64 123, the same on both readings, both flavours.
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact

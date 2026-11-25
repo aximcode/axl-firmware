@@ -11,6 +11,7 @@ import email.message
 import hashlib
 import io
 import json
+import lzma
 import os
 import shutil
 import struct
@@ -29,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, install, licenses, release  # noqa: E402
+from axlfw import boot, checks, fv, install, licenses, release, volinfo  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -825,6 +826,164 @@ class LicenceTests(unittest.TestCase):
         self.assertEqual(
             self._check(listed, compiled),
             ["x64: LICENSES/PartPkg_Library_FooLib_foo/LICENSE is not listed, but its part is compiled into the image"],
+        )
+
+
+VOLINFO = FIXTURES / "volinfo"
+
+
+def _volinfo_text(name: str) -> str:
+    path = VOLINFO / name
+    if path.suffix == ".xz":
+        return lzma.decompress(path.read_bytes()).decode()
+    return path.read_text()
+
+
+def _walker_guids(name: str) -> set[str]:
+    lines = (VOLINFO / f"{name}-walker-guids.txt").read_text().splitlines()
+    return {x for x in lines if x and not x.startswith("#")}
+
+
+def _fv_header(length: int) -> bytes:
+    """An EFI_FIRMWARE_VOLUME_HEADER's first 50 bytes: FvLength, _FVH, HeaderLength."""
+    return b"\0" * 32 + struct.pack("<Q", length) + b"_FVH" + b"\0" * 4 + struct.pack("<H", 0x48)
+
+
+class VolInfoTests(unittest.TestCase):
+    """The second reading of an image, by edk2's VolInfo, and its comparison."""
+
+    def test_parse_real_output(self) -> None:
+        # Captured from r2's RELEASE images with the build's own VolInfo:
+        # X64 has two top-level volumes (FVMAIN_COMPACT, SECFV), AARCH64 one.
+        x64 = volinfo.parse(_volinfo_text("release-x64-0x0.txt.xz")) | volinfo.parse(
+            _volinfo_text("release-x64-0x348000.txt")
+        )
+        self.assertEqual(x64, _walker_guids("release-x64"))
+        self.assertEqual(len(x64), 150)
+        aa64 = volinfo.parse(_volinfo_text("release-aarch64-0x1000.txt.xz"))
+        self.assertEqual(aa64, _walker_guids("release-aarch64"))
+        self.assertEqual(len(aa64), 123)
+        self.assertNotIn(volinfo.FREE_SPACE, x64 | aa64)
+
+    def test_chatter(self) -> None:
+        # The decompressor's "Decoding" lands inside a line; cut out, the
+        # line is whole again.
+        text = _volinfo_text("release-x64-0x0.txt.xz")
+        plain = text.replace("Decoding\n", "")
+        i = plain.index("File Name:", plain.index("SectionDefinitionGuid:"))
+        moved = plain[:i] + "File Na" + "Decoding\n" + plain[i + 7 :]
+        self.assertEqual(volinfo.parse(moved), volinfo.parse(text))
+        self.assertEqual(len(volinfo.parse(text)), 148)
+
+    def test_parse_refuses(self) -> None:
+        text = _volinfo_text("release-x64-0x348000.txt")
+        lines = text.splitlines()
+        first = next(i for i, x in enumerate(lines) if x.startswith("File Name:"))
+        cases = {
+            "an unknown line": (
+                text.replace("File Type:", "File Kind:", 1),
+                "VolInfo output line {n} not understood: {line!r}",
+            ),
+            "a file dropped": (
+                "\n".join(lines[:first] + lines[first + 1 :]),
+                "VolInfo output names 3 files, but its totals add up to 4",
+            ),
+            "cut short": (
+                "\n".join(lines[: first + 3]),
+                "VolInfo output states 0 volume totals, not one ('files in this FV')",
+            ),
+            "nothing": ("", "VolInfo output states 0 volume totals, not one ('files in this FV')"),
+        }
+        # A decode that failed in silence: VolInfo exits 0 with an empty
+        # encapsulation, no "Decoding", and totals that still add up.
+        big = _volinfo_text("release-x64-0x0.txt.xz")
+        start = big.index("/------------ Encapsulation section start")
+        start = big.index("\n", start) + 1
+        end = big.index("\\------------ Encapsulation section end")
+        nested = big[start:end]
+        hollow = big[:start] + big[end:]
+        total = big.count("File Name:") - nested.count("File Name:")
+        hollow = hollow.replace("Decoding\n", "")
+        self.assertIn("There are a total of", hollow)
+        with self.assertRaises(volinfo.VolInfoError) as cm:
+            volinfo.parse(hollow)
+        self.assertRegex(str(cm.exception), r"^VolInfo output line \d+: an empty encapsulated section \(its decoding failed\)$")
+        self.assertGreater(total, 0)
+        with self.assertRaises(volinfo.VolInfoError) as cm:
+            volinfo.parse(big.replace("Decoding\n", ""))
+        self.assertEqual(str(cm.exception), "VolInfo output has 1 LZMA sections but 0 decoded")
+        bad = next(i for i, x in enumerate(lines) if x.startswith("File Type:"))
+        for label, (t, want) in cases.items():
+            with self.subTest(label), self.assertRaises(volinfo.VolInfoError) as cm:
+                volinfo.parse(t)
+            self.assertEqual(str(cm.exception), want.format(n=bad + 1, line=lines[bad].replace("File Type:", "File Kind:")))
+
+    def test_volume_offsets(self) -> None:
+        data = _fv_header(0x100) + b"\xff" * (0x100 - 50) + b"pad" + _fv_header(0x80) + b"\0" * (0x80 - 50)
+        self.assertEqual(volinfo.volume_offsets(data), [0, 0x103])
+        # A volume longer than the file is no volume.
+        self.assertEqual(volinfo.volume_offsets(_fv_header(0x1000)), [])
+
+    def _fake(self, root: Path, script: str) -> tuple[Path, Path, Path]:
+        """A stand-in VolInfo, an image of two volumes, a tools file."""
+        bin_dir = root / "BaseTools" / "BinWrappers" / "PosixLike"
+        bin_dir.mkdir(parents=True)
+        tool = bin_dir / "VolInfo"
+        tool.write_text("#!/usr/bin/env bash\n" + script)
+        tool.chmod(0o755)
+        image = root / "code.fd"
+        image.write_bytes(_fv_header(0x100) + b"\0" * (0x100 - 50) + _fv_header(0x80) + b"\0" * (0x80 - 50))
+        tools = root / "GuidedSectionTools.txt"
+        tools.write_text("EE4E5898-3914-4259-9D6E-DC7BD79403CF LZMA LzmaCompress\n")
+        return image, tools, bin_dir
+
+    def test_image_guids(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "0x0").write_text(_volinfo_text("release-x64-0x0.txt.xz"))
+            (root / "0x100").write_text(_volinfo_text("release-x64-0x348000.txt"))
+            # It must find the tools file beside the image it reads.
+            image, tools, bin_dir = self._fake(
+                root, f'[[ $1 == --offset && -f "$(dirname "$3")/GuidedSectionTools.txt" ]] || exit 9\ncat {root}/"$2"\n'
+            )
+            self.assertEqual(volinfo.image_guids(image, tools, bin_dir), _walker_guids("release-x64"))
+            # The caller's EDK_TOOLS_PATH would make edk2's wrappers run a
+            # host copy: the workspace's is passed instead.
+            image, tools, bin_dir = self._fake(
+                root / "w", f'[[ $EDK_TOOLS_PATH == {root}/w/BaseTools ]] || {{ echo "host $EDK_TOOLS_PATH"; exit 3; }}\ncat {root}/"$2"\n'
+            )
+            with mock.patch.dict(os.environ, {"EDK_TOOLS_PATH": "/opt/host-edk2/BaseTools"}):
+                self.assertEqual(volinfo.image_guids(image, tools, bin_dir), _walker_guids("release-x64"))
+
+    def test_image_guids_refused(self) -> None:
+        cases = {
+            # As VolInfo does: Error() writes to stdout, and the status is 2.
+            "exits 2": (
+                "echo 'VolInfo: ERROR 0003: error parsing FV image'\nexit 2\n",
+                "exited 2: ",
+            ),
+            "warns": ("echo 'EFI_SECTION_GUID_DEFINED cannot be parsed at this time' >&2\n", "exited 0: EFI_SECTION_GUID_DEFINED cannot be parsed at this time"),
+            "unparseable": ("echo garbage\n", "VolInfo output line 1 not understood: 'garbage'"),
+        }
+        for label, (script, tail) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as t:
+                image, tools, bin_dir = self._fake(Path(t), script)
+                with self.assertRaises(volinfo.VolInfoError) as cm:
+                    volinfo.image_guids(image, tools, bin_dir)
+                self.assertEqual(str(cm.exception), f"{image}: VolInfo at 0x0: {tail}" if label == "unparseable" else f"{image}: VolInfo at 0x0 {tail}")
+
+    def test_compare(self) -> None:
+        both = _walker_guids("release-aarch64")
+        one = sorted(both)[0]
+        image = Path("/r/aarch64/code.fd")
+        self.assertEqual(volinfo.compare(image, both, set(both)), [])
+        self.assertEqual(
+            volinfo.compare(image, both, both - {one}),
+            [f"{image}: the FV walker finds files VolInfo does not: {one}"],
+        )
+        self.assertEqual(
+            volinfo.compare(image, both - {one}, both),
+            [f"{image}: VolInfo finds files the FV walker does not: {one}"],
         )
 
 

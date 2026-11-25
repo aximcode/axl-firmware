@@ -1,0 +1,70 @@
+VolInfo Version 1.0 Build Developer Build based on Revision: Unknown
+Signature:        _FVH (4856465F)
+Attributes:       4FEFF
+       EFI_FVB2_READ_DISABLED_CAP
+       EFI_FVB2_READ_ENABLED_CAP
+       EFI_FVB2_READ_STATUS
+       EFI_FVB2_WRITE_DISABLED_CAP
+       EFI_FVB2_WRITE_ENABLED_CAP
+       EFI_FVB2_WRITE_STATUS
+       EFI_FVB2_LOCK_CAP
+       EFI_FVB2_LOCK_STATUS
+       EFI_FVB2_STICKY_WRITE
+       EFI_FVB2_MEMORY_MAPPED
+       EFI_FVB2_ERASE_POLARITY
+       EFI_FVB2_READ_LOCK_CAP
+       EFI_FVB2_READ_LOCK_STATUS
+       EFI_FVB2_WRITE_LOCK_CAP
+       EFI_FVB2_WRITE_LOCK_STATUS
+       EFI_FVB2_ALIGNMENT_16
+Header Length:         0x00000048
+File System ID:        8c8ce578-8a3d-4f1c-9935-896185c32dd3
+Revision:              0x0002
+Number of Blocks:      0x00000034
+Block Length:          0x00001000
+Total Volume Size:     0x00034000
+============================================================
+File Name:        FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF  
+File Offset:      0x00000048
+File Length:      0x0000002C
+File Attributes:  0x00
+File State:       0xF8
+        EFI_FILE_DATA_VALID
+File Type:        0xF0  EFI_FV_FILETYPE_FFS_PAD
+============================================================
+File Name:        DF1CCEF6-F301-4A63-9661-FC6030DCC880  
+File Offset:      0x00000078
+File Length:      0x0000C5FE
+File Attributes:  0x00
+File State:       0xF8
+        EFI_FILE_DATA_VALID
+File Type:        0x03  EFI_FV_FILETYPE_SECURITY_CORE
+------------------------------------------------------------
+  Type:  EFI_SECTION_PE32
+  Size:  0x0000C5C4
+------------------------------------------------------------
+  Type:  EFI_SECTION_USER_INTERFACE
+  Size:  0x00000014
+  String: SecMain
+------------------------------------------------------------
+  Type:  EFI_SECTION_VERSION
+  Size:  0x0000000E
+  Build Number:  0x0000
+  Version String:  1.0
+============================================================
+File Name:        FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF  
+File Offset:      0x0000C678
+File Length:      0x00026DB0
+File Attributes:  0x00
+File State:       0xF8
+        EFI_FILE_DATA_VALID
+File Type:        0xF0  EFI_FV_FILETYPE_FFS_PAD
+============================================================
+File Name:        1BA0062E-C779-4582-8566-336AE8F78F09  
+File Offset:      0x00033428
+File Length:      0x00000BD8
+File Attributes:  0x08
+File State:       0xF8
+        EFI_FILE_DATA_VALID
+File Type:        0x01  EFI_FV_FILETYPE_RAW
+There are a total of 4 files in this FV

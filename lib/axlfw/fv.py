@@ -9,7 +9,9 @@ does not start at offset 0, so the volumes are found here by their
 
 Checked against axl-sdk's ``fwtool list`` on edk2-stable202602's OVMF and
 ArmVirtQemu, QEMU 10.0.0's bundled images and AlmaLinux's: the same file
-GUIDs on every one (docs/DESIGN.md §4.15 and §6).
+GUIDs on every one (docs/DESIGN.md §4.15 and §6). Every release image is
+read again by edk2's VolInfo, and the two sets must agree (volinfo.py,
+§4.23).
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ if TYPE_CHECKING:
 # EFI_FIRMWARE_VOLUME_HEADER: the signature's offset in the header.
 _SIGNATURE = b"_FVH"
 _SIGNATURE_OFFSET = 40
-# The free space at a volume's end parses as a file with this GUID.
+# The free space at a volume's end parses as a file with this GUID, and
+# pad files (EFI_FV_FILETYPE_FFS_PAD) are named by it too.
 _FREE_SPACE = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
 
 

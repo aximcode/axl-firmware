@@ -46,6 +46,10 @@ more. Everything else is as in r1.
   objects the build compiled. X64: edk2 and OpenSSL. AARCH64: edk2,
   OpenSSL, libfdt (BSD-2-Clause chosen, GPL not) and libtl (MIT chosen,
   GPL-2.0-or-later not). The manifest stays format 2.
+- **A second reading of every image.** Before packing, edk2's own VolInfo
+  (from the build) lists each code image's files again, and the set must
+  equal the FV walker's (uefi_firmware): two independent parsers agree.
+  150 files on X64, 123 on AARCH64.
 - Each new tag re-checks all four patches against upstream.
 
 ## edk2-stable202611-r1
