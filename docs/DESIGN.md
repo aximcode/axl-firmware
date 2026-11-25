@@ -519,6 +519,14 @@ Verified:
   `cortex-a57` reached it in 11 s; the same image is the CPU check's control).
   Cause and fix: §4.1. The other boot checks use `cortex-a57`, axlvmpool's
   default.
+- *GitHub's runners run steps with SIGPIPE ignored.* Run 45708237045's
+  no-build tests failed on `tr: write error: Broken pipe` from a `tr | awk`
+  whose awk exits early; a tr killed by SIGPIPE says nothing. So no script
+  here pipes a producer into a consumer that may exit before reading all of
+  it (`head`, `grep -q`, an awk `exit`): under `pipefail` the producer's
+  failure fails the pipeline, and where SIGPIPE is ignored it also writes to
+  stderr. Reproduced locally by ignoring SIGPIPE and feeding tr its input in
+  two parts, so that awk has exited before the second.
 
 To verify:
 

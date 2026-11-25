@@ -232,10 +232,11 @@ terminal_keys() {
     chmod u+w "$t/$f"
     GIT_CEILING_DIRECTORIES=$tmp git -C "$t" apply --include="$f" "$here/patches/0004-terminal-control-keys.patch" || return 1
     # The function, from its return type to its closing brace (edk2's
-    # sources have CRLF line ends).
-    tr -d '\r' <"$t/$f" |
-        awk '/^IsKeyRegistered \($/ { print prev; on = 1 } on { print } on && /^}$/ { exit } { prev = $0 }' \
-            >"$t/IsKeyRegistered.c"
+    # sources have CRLF line ends). awk reads the file itself: a producer
+    # piped into it would write into a closed pipe once awk exits at the
+    # brace, and where SIGPIPE is ignored (GitHub's runners) say so on stderr.
+    awk '{ sub(/\r$/, "") } /^IsKeyRegistered \($/ { print prev; on = 1 } on { print } on && /^}$/ { exit } { prev = $0 }' \
+        "$t/$f" >"$t/IsKeyRegistered.c"
     grep -q '^IsKeyRegistered ($' "$t/IsKeyRegistered.c" || return 1
     gcc -std=c99 -Wall -Wextra -Werror -I "$t" -I "$here/tests/terminal-keys" \
         -o "$t/keys" "$here/tests/terminal-keys/main.c" || return 1

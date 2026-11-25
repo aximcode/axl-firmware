@@ -146,9 +146,12 @@ source_ok() {
     fi
     # A leading ' ' is a submodule checked out at its recorded commit.
     sub=$(submodules "$d" | (cd "$d" && xargs git submodule status --)) || return 1
-    if grep -v '^ ' <<<"$sub" | grep -q .; then
+    # Not `grep | grep -q`: under pipefail, grep -q's early exit can fail the
+    # producer (SIGPIPE, or EPIPE where it is ignored) and so the test.
+    sub=$(grep -v '^ ' <<<"$sub") || sub=""
+    if [[ -n "$sub" ]]; then
         echo "$prog: $d: submodules not at their recorded commits:" >&2
-        grep -v '^ ' <<<"$sub" >&2
+        printf '%s\n' "$sub" >&2
         return 1
     fi
     local f
