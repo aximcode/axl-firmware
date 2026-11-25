@@ -770,6 +770,32 @@ class BuildShTests(unittest.TestCase):
             )
             self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "none -1\n", ""))
 
+    def _default_jobs(self, prefix: list[str], path: str) -> tuple[int, str, str]:
+        here = Path(__file__).resolve().parent.parent
+        r = subprocess.run(
+            [*prefix, "bash", "-c", '. "$1"; default_jobs', "-", str(here / "build.sh")],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PATH": path},
+        )
+        return r.returncode, r.stdout, r.stderr
+
+    def test_default_jobs_is_the_cpus_this_process_may_use(self) -> None:
+        taskset = shutil.which("taskset")
+        if taskset is None:
+            self.skipTest("no taskset")
+        self.assertEqual(self._default_jobs([taskset, "-c", "0"], os.environ["PATH"]), (0, "1\n", ""))
+
+    def test_default_jobs_is_4_without_nproc(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            # A PATH with bash and dirname but no nproc.
+            for tool in ("bash", "dirname"):
+                found = shutil.which(tool)
+                assert found is not None
+                (Path(t) / tool).symlink_to(found)
+            self.assertEqual(self._default_jobs([], t), (0, "4\n", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,7 @@
 # uuid-dev), nasm, iasl, aarch64-linux-gnu-gcc (or GCC_AARCH64_PREFIX),
 # flock, xz, and QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
 # QEMU_DIR or PATH) for the boot checks. The build runs at nice 19 with
-# JOBS (default 4) jobs.
+# JOBS jobs (default: the CPUs this process may use, `nproc`; CI sets 4).
 set -euo pipefail
 
 tag="edk2-stable202611"
@@ -216,6 +216,17 @@ axlfw() {
     "$python" -E -s "$here/lib/axlfw-run.py" "$@"
 }
 
+# default_jobs: the build's parallelism when JOBS is unset: the CPUs this
+# process may use (nproc honours its CPU affinity), or 4 without nproc.
+default_jobs() {
+    local n
+    if n=$(nproc 2>/dev/null) && [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+        echo "$n"
+    else
+        echo 4
+    fi
+}
+
 # Sourced (by the tests): the functions above, and nothing run.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
@@ -281,7 +292,7 @@ while (($#)); do
     esac
 done
 
-jobs=${JOBS:-4}
+jobs=${JOBS:-$(default_jobs)}
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive number, not '$jobs'"
 aa64_prefix=${GCC_AARCH64_PREFIX:-aarch64-linux-gnu-}
 aa64_gcc="${aa64_prefix}gcc"

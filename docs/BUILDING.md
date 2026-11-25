@@ -18,7 +18,7 @@ against its source.
 `build.sh` checks each before it starts. `GCC_AARCH64_PREFIX` names another
 cross prefix; `QEMU_DIR` names a directory holding `qemu-system-x86_64` and
 `qemu-system-aarch64` (for example a source build's `$HOME/projects/qemu/install/bin`);
-`JOBS` (default 4) is the build's parallelism. The build runs at nice 19.
+`JOBS` is the build's parallelism (edk2's `build -n`), defaulting to the CPUs this process may use (`nproc`); CI sets `JOBS=4`. On a shared machine, set it lower. The build runs at nice 19.
 
 The checks' Python runs in a venv that `build.sh` makes once in
 `$XDG_CACHE_HOME/axl-firmware/venv-<digest of requirements.txt>`, installing
