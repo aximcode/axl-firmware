@@ -1,0 +1,74 @@
+Subject: [PATCH] ArmVirtPkg/QemuVirtMemInfoLib: map the debug PL011 too
+
+With two PL011 UARTs, DebugLibFdtPL011Uart sends DEBUG output to the
+one that is not the console. Since 158c1b614 ("ArmVirtPkg: Refactor
+virtual memory mapping for qemu guest firmware"), PEI maps only the
+console UART's page and fw_cfg, no longer virt's whole peripheral
+window, so the first DEBUG write to the other UART takes a level 3
+translation fault (seen: "Synchronous Exception" in PeiCore's
+MmioRead32, FAR 0x9040030, the second UART's UARTCR), and a DEBUG
+build with two UARTs never boots.
+
+Map every PL011 the device tree lists, each page as the console's is
+mapped (device memory, with the CCA protection bit). One UART, or the
+console alone, maps as before.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0002-bochs-display-video.patch to a copy of the packages it touches.
+
+---
+diff --git a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
+index 5b963ec..7e6a5ec 100644
+--- a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
++++ b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
+@@ -20,7 +20,7 @@
+ #include <Library/FdtLib.h>
+ 
+ // Number of Virtual Memory Map Descriptors
+-#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (5)
++#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (6)
+ 
+ /** A macro to trace the memory map.
+ **/
+@@ -199,6 +199,8 @@ ArmVirtGetMemoryMap (
+   UINT64                        MappingBase;
+   UINT64                        MappingSize;
+   UINT64                        UartBase;
++  FDT_SERIAL_PORTS              Ports;
++  UINTN                         PortIdx;
+   UINT64                        FwCfgBase;
+   UINT64                        FwCfgSize;
+ 
+@@ -282,6 +284,32 @@ ArmVirtGetMemoryMap (
+   LOG_MEM_MAP ("Serial Port");
+   Idx++;
+ 
++  //
++  // Map the other PL011 too, if there is one: with two, DebugLibFdtPL011Uart
++  // sends DEBUG output to the port that is not the console, and an unmapped
++  // port faults on the first DEBUG write.
++  //
++  if (!RETURN_ERROR (FdtSerialGetPorts (DeviceTreeBase, "arm,pl011", &Ports))) {
++    for (PortIdx = 0; PortIdx < Ports.NumberOfPorts; PortIdx++) {
++      MappingBase = Ports.BaseAddress[PortIdx] & ~(UINT64)EFI_PAGE_MASK;
++      if (MappingBase == (UartBase & ~(UINT64)EFI_PAGE_MASK)) {
++        continue;
++      }
++
++      MappingSize = EFI_PAGES_TO_SIZE (
++                      EFI_SIZE_TO_PAGES (
++                        Ports.BaseAddress[PortIdx] - MappingBase + EFI_PAGE_SIZE
++                        )
++                      );
++      VirtualMemoryTable[Idx].PhysicalBase = (MappingBase | DevMapBit);
++      VirtualMemoryTable[Idx].VirtualBase  = MappingBase;
++      VirtualMemoryTable[Idx].Length       = MappingSize;
++      VirtualMemoryTable[Idx].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
++      LOG_MEM_MAP ("Debug Serial Port");
++      Idx++;
++    }
++  }
++
+   // Map the fw_cfg MMIO region
+   MappingBase = FwCfgBase & ~(UINT64)EFI_PAGE_MASK;
+   MappingSize = EFI_PAGES_TO_SIZE (
