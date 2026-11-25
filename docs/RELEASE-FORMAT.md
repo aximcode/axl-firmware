@@ -1,0 +1,360 @@
+# Release format
+
+The consumers' contract. A change here is agreed with the consumers first
+([CONSUMERS.md](CONSUMERS.md)) and recorded in [DESIGN.md](DESIGN.md).
+
+## The release
+
+A release is a GitHub release of `aximcode/axl-firmware`, tagged
+`<edk2 tag>-r<N>` (`edk2-stable202611-r1`): `<N>` counts this repository's
+releases of one edk2 tag. Its assets:
+
+| Asset | Contents |
+|---|---|
+| `axl-firmware-<release>.tar.xz` | the release (below) |
+| `axl-firmware-<release>-symbols-x64.tar.xz` | X64 DEBUG symbols |
+| `axl-firmware-<release>-symbols-aarch64.tar.xz` | AARCH64 DEBUG symbols |
+| `SHA256SUMS` | `<sha256>  <asset>` per tarball, in name order (`sha256sum -c` format) |
+
+## The release tarball
+
+Every member sits under one directory, `axl-firmware-<release>/`. Members are
+regular files and directories only, owned by 0:0, files `0644`, directories
+`0755`, each dated the edk2 commit's date, in the order of their path
+components (Python's `sorted` over `pathlib` paths). Only the member list and
+metadata are deterministic: `manifest.json` records the build time and run, so
+two builds' tarballs differ even when their images are identical.
+
+```
+axl-firmware-<release>/
+  x64/code.fd                 OVMF_CODE.fd, X64 DEBUG
+  x64/vars.fd                 OVMF_VARS.fd, its variable-store template
+  x64/Shell_X64.efi           the UEFI Shell of that build
+  aarch64/code.fd             QEMU_EFI.fd, AARCH64 DEBUG, padded with zeros to 64 MiB
+  aarch64/vars.fd             QEMU_VARS.fd, padded to 64 MiB
+  aarch64/Shell_AARCH64.efi
+  release/x64/...             the same three files, RELEASE
+  release/aarch64/...         the same three files, RELEASE
+  descriptors/10-axl-firmware-<release>-x64.json              X64 DEBUG
+  descriptors/10-axl-firmware-<release>-aarch64.json          AARCH64 DEBUG
+  descriptors/20-axl-firmware-<release>-release-x64.json      X64 RELEASE
+  descriptors/20-axl-firmware-<release>-release-aarch64.json  AARCH64 RELEASE
+  manifest.json
+  patches/*.patch             the patches applied to edk2
+  LICENSES/edk2-License.txt   edk2's (BSD-2-Clause-Patent)
+  LICENSES/<submodule>/...    each third-party part built into an image: its
+                              licence files, the submodule's path with / as _
+```
+
+The DEBUG directories are the bare arch names because DEBUG is the default
+every consumer boots; RELEASE sits apart under `release/`. Each directory holds
+its code, its vars template and its Shell together, because consumers take the
+firmware's directory as the Shell's (`${firmware_dir}/Shell_<ARCH>.efi`).
+
+## Descriptors
+
+QEMU firmware descriptors (QEMU's `docs/interop/firmware.json`), one per image.
+In the tarball their file names are **relative to the release directory**; the
+install rewrites them to absolute paths, which QEMU requires. Installed X64 DEBUG
+(prefix `$HOME/.local/share/axl-firmware`, written out):
+
+```json
+{
+  "description": "axl-firmware edk2-stable202611-r1 for X64 (q35), DEBUG, edk2 edk2-stable202611",
+  "interface-types": ["uefi"],
+  "mapping": {
+    "device": "flash",
+    "mode": "split",
+    "executable": {"filename": "$HOME/.local/share/axl-firmware/edk2-stable202611-r1/x64/code.fd", "format": "raw"},
+    "nvram-template": {"filename": "$HOME/.local/share/axl-firmware/edk2-stable202611-r1/x64/vars.fd", "format": "raw"}
+  },
+  "targets": [{"architecture": "x86_64", "machines": ["pc-q35-*"]}],
+  "features": ["acpi-s3", "amd-sev", "amd-sev-es", "verbose-dynamic"],
+  "tags": ["edk2-stable202611", "556dcfb466e9f05affeaff881d738807f8156d3c", "edk2-stable202611-r1", "DEBUG"]
+}
+```
+
+| Image | File | `architecture`, `machines` | `features` |
+|---|---|---|---|
+| X64 DEBUG | `10-axl-firmware-<release>-x64.json` | `x86_64`, `pc-q35-*` | `acpi-s3`, `amd-sev`, `amd-sev-es`, `verbose-dynamic` |
+| AARCH64 DEBUG | `10-axl-firmware-<release>-aarch64.json` | `aarch64`, `virt-*` | `verbose-static` |
+| X64 RELEASE | `20-axl-firmware-<release>-release-x64.json` | `x86_64`, `pc-q35-*` | `acpi-s3`, `amd-sev`, `amd-sev-es` |
+| AARCH64 RELEASE | `20-axl-firmware-<release>-release-aarch64.json` | `aarch64`, `virt-*` | (none) |
+
+- `description`: `axl-firmware <release> for <X64 (q35)|AARCH64 (virt)>, <flavour>, edk2 <edk2 tag>`.
+- `tags`: the edk2 tag, its commit, the release, the flavour.
+- **Numbering:** DEBUG `10-`, RELEASE `20-`. Under the shared rule (lowest name
+  first, `verbose-static` first on AARCH64) DEBUG is picked; RELEASE is chosen
+  by name. The `10-axl-firmware-` prefix sorts before a distribution's
+  `10-edk2-...`.
+- Features are only what the build has: S3 and SEV/SEV-ES as QEMU labels its
+  own build with these flags; `verbose-dynamic` for X64 DEBUG (its DEBUG output
+  on I/O port 0x402); `verbose-static` for AARCH64 DEBUG (errors only, on the
+  second UART by static configuration). No `secure-boot`, no `enrolled-keys`.
+
+## manifest.json
+
+`format` 2. (Format 1 was axlvmpool's own manifest, at its old install path.)
+Paths are relative to the release directory. Every value below is present.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | int | 2 |
+| `release` | string | the release tag, `edk2-stable202611-r1` |
+| `edk2.tag` | string | the edk2 tag built |
+| `edk2.commit` | string | its commit (full hash) |
+| `edk2.url` | string | the repository it was fetched from |
+| `edk2.fixes` | [string] | fixes the source must hold as ancestors of `commit`, full hashes: the VirtioRng fix `8ba02634…` and the LPA2 fix `b8df7d9c…` |
+| `edk2.patches` | [{`name`, `sha256`}] | the patches applied, in order (`patches/<name>`) |
+| `flags_from` | string | where the build flags come from |
+| `built` | string | UTC build time, `YYYY-MM-DDTHH:MM:SSZ` |
+| `built_by.how` | string | `local`, or `github-actions <run URL>` |
+| `built_by.axl_firmware_commit` | string | this repository's commit; `none` when the build ran outside a git checkout git accepts |
+| `built_by.uncommitted_changes` | int | files changed in that checkout (0 for a release); -1 when git could not tell, as above |
+| `toolchain` | string | edk2's toolchain tag, `GCC` |
+| `compilers.x64`, `compilers.aarch64` | string | the compiler and version used |
+| `default_flavour` | string | `DEBUG` |
+| `images` | object | one entry per image, keyed by its directory: `x64`, `aarch64`, `release/x64`, `release/aarch64` |
+| `descriptors` | [string] | the descriptors, `descriptors/<name>` |
+| `symbols.x64`, `symbols.aarch64` | string | the symbols tarballs' asset names |
+| `licenses` | [string] | the licence files, `LICENSES/...` |
+
+Each `images.<dir>`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `arch` | string | `x64` or `aarch64` |
+| `flavour` | string | `DEBUG` or `RELEASE` |
+| `machine` | string | QEMU's machine: `q35`, `virt` |
+| `platform` | string | the DSC: `OvmfPkg/OvmfPkgX64.dsc`, `ArmVirtPkg/ArmVirtQemu.dsc` |
+| `defines` | [string] | the build's `-D` defines |
+| `pcds` | [string] | the build's `--pcd` overrides, as given to `build` |
+| `code`, `vars`, `shell` | {`path`, `size`, `sha256`} | the three files |
+| `descriptor` | string | its descriptor, `descriptors/<name>` |
+| `secure_boot` | bool | `false`: no Secure Boot is built in |
+| `debug.target` | string | the build's target, `DEBUG` or `RELEASE` |
+| `debug.asserts_compiled` | bool | ASSERTs and DEBUG are compiled in (no `MDEPKG_NDEBUG`) |
+| `debug.property_mask` | string or null | `PcdDebugPropertyMask`, hex (`0x2f`); null when the build references none (AARCH64 RELEASE) |
+| `debug.print_error_level` | string or null | `PcdDebugPrintErrorLevel`, hex (`0x8000004f`, `0x80000000`); null as above |
+| `debug.boot_manager_menu` | string | `UiApp` when `PcdBootManagerMenuFile` is UiApp's GUID |
+| `debug.assert` | string | X64 DEBUG only: `deadloop` or `breakpoint` (the mask's 0x20 or 0x10) |
+| `debug.clear_memory` | bool | X64 DEBUG only: the mask's 0x08 (freed memory cleared) |
+| `debug.output` | string | DEBUG only: where the DEBUG output goes |
+| `debug.descriptor_feature` | string | DEBUG only: `verbose-dynamic` or `verbose-static` |
+| `verified.by` | string | the walker that read the image |
+| `verified.drivers` | [{`name`, `guid`}] | the FFS files the code image was checked to hold |
+| `verified.absent` | [{`name`, `guid`}] | the FFS files it was checked not to hold |
+| `measured` | object | what the boot checks measured (below) |
+
+Each `images.<dir>.measured`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `text_modes.<display>.modes` | [[cols, rows]] | the Shell's `mode` list, in mode order, per display: `serial` (no display device), `std-vga` (`-device VGA,edid=off`, so the firmware's own default mode, 1280x800, applies), `virtio-gpu` (`-device virtio-gpu-pci`), `bochs-display` (`-device bochs-display,edid=off`, likewise) |
+| `text_modes.<display>.current` | [cols, rows] | the mode the console was in |
+| `smbios_bios_version` | string | SMBIOS type 0's BIOS version (`smbiosview -t 0`) |
+| `nv_after_warm_reset`, `nv_after_cold_start` | bool | a variable written with `setvar -nv` read back after `reset`, and in a new QEMU on the same vars file |
+| `front_page_after_exit` | bool | the Shell's `exit` reached the front page |
+| `debug_output` | {`where`, `bytes`, `info_lines`} | what reached the DEBUG channel in the serial boot |
+| `gop_std_vga` | {`size`: [w, h], `drawn`: bool} | std-VGA's screen at the Shell (`edid=off`), from a screendump: its size (1280x800 on both arches) and whether any pixel is lit |
+| `bochs_display` | {`devices`, `size`: [w, h], `drawn`: bool} | QemuVideoDxe's device count on `bochs-display`, and its screen at the Shell (`edid=off`, so the firmware's default, 1280x800 on both arches), from a screendump: its size and whether any pixel is lit |
+| `cpu_models_reach_shell` | {model: bool} | AARCH64 only: a boot under each `-cpu` (`max`, `cortex-a57`, `neoverse-v1`) reached the Shell |
+
+A consumer checks an installed image as the install does: the manifest parses
+with `format` 2, lists all four image sets, and each set's `code`, `vars` and
+`shell` are at `<dir>/code.fd`, `<dir>/vars.fd` and `<dir>/Shell_<ARCH>.efi`
+with the recorded `size` and `sha256`.
+
+## The symbols tarballs
+
+`axl-firmware-<release>-symbols-<arch>.tar.xz`, under
+`axl-firmware-<release>-symbols-<arch>/<arch>/`: the DEBUG build's `<Module>.debug`
+files (ELF with DWARF, one per module, as edk2 names them) and `FV/*.Fv.map`
+(each firmware volume's module load offsets). `build.sh install --symbols`
+puts them in `<prefix>/<release>/symbols/<arch>/`.
+
+## The install layout
+
+```
+$XDG_DATA_HOME/axl-firmware/            (default $HOME/.local/share/axl-firmware; --prefix)
+  <release>/                            the tarball's directory, unpacked whole
+    symbols/<arch>/                     with --symbols
+  descriptors/<name>.json               the release's descriptors, absolute paths
+```
+
+One install runs at a time per prefix (a lock on `<prefix>/.lock`). The
+tarballs and `SHA256SUMS` are copied (or downloaded) into a private directory
+beside their place (`<prefix>/.install.*`), and only those copies are read.
+The release is unpacked there and checked: the tarball's sha256, its members
+(regular files and directories under its one top directory), the manifest's
+`format` 2 and `release`, all four image sets, each image file at its set's
+path with its size and sha256, and each descriptor's paths (inside the release,
+files present). Only then is it renamed in, an existing directory of the same
+release moved aside; the descriptors are written, each by a temporary file and
+a rename; if that fails, each descriptor written is removed (or, for the same
+release, put back as it was) and the earlier directory is put back. Then every other `10-axl-firmware-*`
+or `20-axl-firmware-*` descriptor there is removed, so only the installed
+release is advertised. Other releases' directories stay.
+
+## Example
+
+`manifest.json` from CI run 45650143026 (main at `fa45456`, a candidate for
+`edk2-stable202611-r1`; it will be replaced by the published release's). Cut
+for length: `images` shows only `x64` (the other three sets have the same
+fields, AARCH64's `measured` adding `cpu_models_reach_shell`),
+`verified.drivers` its first two of 24, and `licenses` its first two of 11.
+That run predates `edid=off` on the GOP checks, so its 1280x800 sizes were
+measured with QEMU's EDID on, and the bounded patch 0003, so that patch's
+`sha256` differs from the current file's.
+
+```json
+{
+  "format": 2,
+  "release": "edk2-stable202611-r1",
+  "edk2": {
+    "tag": "edk2-stable202611",
+    "commit": "556dcfb466e9f05affeaff881d738807f8156d3c",
+    "url": "https://github.com/tianocore/edk2.git",
+    "fixes": [
+      "8ba02634ecaa6ff5d0edcea266198f42eca90c53",
+      "b8df7d9c8e1e370b862890ebda677278c4c6155f"
+    ],
+    "patches": [
+      {"name": "0001-pointer-drivers.patch", "sha256": "1121bcd28ce9f87c679b66e956784b11d03ce6201c2b96649c74186c9b19dc48"},
+      {"name": "0002-bochs-display-video.patch", "sha256": "c87d38788d80122b94b48da0198d97296d3ccfe641d55c842110863a0609c5a7"},
+      {"name": "0003-map-debug-uart.patch", "sha256": "39f64a2139a110680af8b86ac102c3d7ca6fb4fc21ad72f310952627472a70cf"}
+    ]
+  },
+  "flags_from": "QEMU v10.0.0 roms/edk2-build.config, plus edk2-stable202408's front page (PcdBootManagerMenuFile, PcdSetupConOut*, PcdSetupVideo*)",
+  "built": "2026-11-25T16:25:22Z",
+  "built_by": {
+    "how": "github-actions https://github.com/aximcode/axl-firmware/actions/runs/45650143026",
+    "axl_firmware_commit": "fa45456bc2baacedfeb8c5c991327e4a839e9ab2",
+    "uncommitted_changes": 0
+  },
+  "toolchain": "GCC",
+  "compilers": {
+    "x64": "gcc 15.2.0",
+    "aarch64": "aarch64-linux-gnu-gcc 15.2.0"
+  },
+  "default_flavour": "DEBUG",
+  "images": {
+    "x64": {
+      "arch": "x64",
+      "flavour": "DEBUG",
+      "machine": "q35",
+      "platform": "OvmfPkg/OvmfPkgX64.dsc",
+      "defines": [
+        "NETWORK_HTTP_BOOT_ENABLE=TRUE",
+        "NETWORK_IP6_ENABLE=TRUE",
+        "NETWORK_TLS_ENABLE=TRUE",
+        "NETWORK_ISCSI_ENABLE=TRUE",
+        "NETWORK_ALLOW_HTTP_CONNECTIONS=TRUE",
+        "TPM2_ENABLE=TRUE",
+        "TPM2_CONFIG_ENABLE=TRUE",
+        "TPM1_ENABLE=TRUE",
+        "CAVIUM_ERRATUM_27456=TRUE"
+      ],
+      "pcds": [
+        "PcdFirmwareVersionString=Ledk2-stable202611\\0",
+        "PcdFirmwareReleaseDateString=L11/17/2026\\0",
+        "PcdBootManagerMenuFile=H{0x21,0xaa,0x2c,0x46,0x14,0x76,0x03,0x45,0x83,0x6e,0x8a,0xb6,0xf4,0x66,0x23,0x31}",
+        "PcdSetupConOutColumn=80",
+        "PcdSetupConOutRow=25",
+        "PcdSetupVideoHorizontalResolution=640",
+        "PcdSetupVideoVerticalResolution=480"
+      ],
+      "code": {
+        "path": "x64/code.fd",
+        "size": 3653632,
+        "sha256": "4b4cb8b16800ce7b5da6efa996ebad133b81f023ec5758a3622064facdd76264"
+      },
+      "vars": {
+        "path": "x64/vars.fd",
+        "size": 540672,
+        "sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+      },
+      "shell": {
+        "path": "x64/Shell_X64.efi",
+        "size": 995328,
+        "sha256": "0f9b28636e939bd7b45aec14a4ea41d44949665abd7d87bf6b4d9324747dbac4"
+      },
+      "descriptor": "descriptors/10-axl-firmware-edk2-stable202611-r1-x64.json",
+      "debug": {
+        "target": "DEBUG",
+        "asserts_compiled": true,
+        "property_mask": "0x2f",
+        "print_error_level": "0x8000004f",
+        "boot_manager_menu": "UiApp",
+        "assert": "deadloop",
+        "clear_memory": true,
+        "output": "debugcon I/O port 0x402",
+        "descriptor_feature": "verbose-dynamic"
+      },
+      "secure_boot": false,
+      "verified": {
+        "by": "uefi_firmware 1.17 (lib/axlfw/fv.py)",
+        "drivers": [
+          {"name": "VirtioFsDxe", "guid": "7BD9DDF7-8B83-488E-AEC9-24C78610289C"},
+          {"name": "VirtioGpuDxe", "guid": "D6099B94-CD97-4CC5-8714-7F6312701A8A"}
+        ],
+        "absent": [
+          {"name": "SecureBootConfigDxe", "guid": "F0E6A44F-7195-41C3-AC64-54F202CD0A21"}
+        ]
+      },
+      "measured": {
+        "text_modes": {
+          "serial": {
+            "modes": [[80, 25], [80, 50], [100, 31], [128, 40], [160, 42], [240, 56]],
+            "current": [240, 56]
+          },
+          "std-vga": {
+            "modes": [[80, 25], [100, 31], [128, 40], [160, 42]],
+            "current": [160, 42]
+          },
+          "virtio-gpu": {
+            "modes": [[80, 25], [100, 31], [128, 40], [160, 42]],
+            "current": [160, 42]
+          },
+          "bochs-display": {
+            "modes": [[80, 25], [100, 31], [128, 40], [160, 42]],
+            "current": [160, 42]
+          }
+        },
+        "smbios_bios_version": "edk2-stable202611",
+        "nv_after_warm_reset": true,
+        "debug_output": {
+          "where": "debugcon 0x402",
+          "bytes": 227332,
+          "info_lines": 246
+        },
+        "nv_after_cold_start": true,
+        "gop_std_vga": {
+          "size": [1280, 800],
+          "drawn": true
+        },
+        "front_page_after_exit": true,
+        "bochs_display": {
+          "devices": 1,
+          "size": [1280, 800],
+          "drawn": true
+        }
+      }
+    }
+  },
+  "descriptors": [
+    "descriptors/10-axl-firmware-edk2-stable202611-r1-x64.json",
+    "descriptors/10-axl-firmware-edk2-stable202611-r1-aarch64.json",
+    "descriptors/20-axl-firmware-edk2-stable202611-r1-release-x64.json",
+    "descriptors/20-axl-firmware-edk2-stable202611-r1-release-aarch64.json"
+  ],
+  "symbols": {
+    "x64": "axl-firmware-edk2-stable202611-r1-symbols-x64.tar.xz",
+    "aarch64": "axl-firmware-edk2-stable202611-r1-symbols-aarch64.tar.xz"
+  },
+  "licenses": [
+    "LICENSES/edk2-License.txt",
+    "LICENSES/CryptoPkg_Library_MbedTlsLib_mbedtls/LICENSE"
+  ]
+}
+```
