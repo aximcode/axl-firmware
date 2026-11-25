@@ -412,11 +412,24 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       the top-level `licenses`, which still lists every part whose
       sources or headers a module's makefile names (the include paths
       of MdePkg, MdeModulePkg and CryptoPkg name them).
-    - *The report does not change the images.* It is written after
-      GenFds. Measured on AlmaLinux 10 x86_64, gcc 14: X64 DEBUG and
-      RELEASE built clean with and without `-y`, byte for byte the same
-      `code.fd`, `vars.fd` and `Shell.efi` (X64 is reproducible; AARCH64
-      is not, §5.2, so it cannot be compared so).
+    - *The report does not change the images.* `build` only records
+      the options until the build ends, then writes the report from what
+      was built (`BuildReport.py`; no AutoGen or GenFds code reads the
+      report options). Measured on AlmaLinux 10 x86_64, gcc 14, X64 both
+      flavours, clean, in the same workspace path (the path is in DEBUG's
+      strings), four builds: two with `-y` (the r2 build and one more),
+      two without. `vars.fd` and `Shell.efi` were identical in all four,
+      and every module's `.efi` but one. The one is IScsiDxe, and it is
+      not the report's doing: its AutoGen sizes the module-scoped
+      `PcdEntryPointOverrideDefaultValue` override `"no"`
+      (`OvmfPkg/Include/Dsc/NetworkComponents.dsc.inc`) as 3 bytes in
+      some builds and as the DEC default `"yes"`'s 4 in others, a race in
+      edk2's parallel AutoGen. RELEASE's IScsiDxe flipped between the two
+      builds *without* `-y` (and the second matched the `-y` builds'
+      `code.fd`); DEBUG's came out one way with `-y` and the other
+      without, twice each. The value is `"no"` either way, so the
+      behaviour is the same. So X64 at this tag is reproducible except
+      for that one module (§5.2); AARCH64 not at all.
 
 ## 5. Open decisions (the owner's)
 
@@ -424,7 +437,10 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    attestations could sign what CI built. *Recommendation:* add when a consumer
    outside the organisation fetches releases.
 2. **AARCH64 reproducibility.** axlvmpool found X64 byte-reproducible and
-   AARCH64 not (every build differed). *Recommendation:* look into it before
+   AARCH64 not (every build differed). At edk2-stable202611 X64 is not
+   quite either: IScsiDxe's AutoGen sizes a module-scoped VOID* PCD 3 or
+   4 bytes from build to build (§4.22), which changes the compressed
+   `code.fd`; every other module is the same. *Recommendation:* look into it before
    anyone relies on rebuilding a release byte for byte; until then a digest
    names a build, not the source.
 3. **RELEASE symbols.** Only DEBUG's symbols are published.
