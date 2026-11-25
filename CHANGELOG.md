@@ -21,11 +21,15 @@ more. Everything else is as in r1.
 - **`0004-terminal-control-keys.patch`**, in TerminalDxe's
   `IsKeyRegistered`: a key with no shift state that is a control character
   0x01-0x1A (Ctrl+A to Ctrl+Z, as a terminal sends them) matches a
-  registration whose shift state is only Control (left, right or both).
-  Every other case keeps #12281's exact match, so RCtrl+n still does not
-  fire on a plain 'n'. It serves every registrant of a Ctrl key, not only
-  the Shell. The owner decided (2026-11-25) to carry it here, with
-  no upstream report; each new tag re-checks it.
+  registration whose shift state is only Control (left, right or both),
+  except Backspace, Tab, LF and CR (0x08, 0x09, 0x0A, 0x0D): a terminal
+  sends those for keys of their own, and plain typing with Enter must
+  not fire a Ctrl+M registration. Every other case keeps #12281's exact
+  match, so RCtrl+n still does not fire on a plain 'n'. It serves every
+  registrant of a Ctrl key, not only the Shell. The owner decided
+  (2026-11-25) to carry it here, with no upstream report; each new tag
+  re-checks it. A host test compiles the patched function and checks the
+  exact set of characters it matches.
 - **A new boot check**, on every image set: a Shell script ticking for a
   minute, broken by a serial 0x03, must bring the prompt back within 10 s
   (0.10 s measured), with no restart, and the Shell must then run a
@@ -34,6 +38,14 @@ more. Everything else is as in r1.
   edk2-stable202602 either: the Shell's notification function acts on a
   pause only for 's' with Control held, never for 0x13. The patch delivers
   0x13 to it; the Shell ignores it.
+- **A licence list per image** (`images.<dir>.licenses` in the
+  manifest): the licence texts that image needs, each `{path, chosen}`,
+  so a consumer that vendors some images copies only theirs. edk2's
+  licence always; then every third-party part compiled into a module of
+  the image, derived from edk2's build report and checked against the
+  objects the build compiled. X64: edk2 and OpenSSL. AARCH64: edk2,
+  OpenSSL, libfdt (BSD-2-Clause chosen, GPL not) and libtl (MIT chosen,
+  GPL-2.0-or-later not). The manifest stays format 2.
 - Each new tag re-checks all four patches against upstream.
 
 ## edk2-stable202611-r1

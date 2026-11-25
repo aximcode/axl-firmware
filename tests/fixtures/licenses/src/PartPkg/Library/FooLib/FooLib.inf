@@ -1,0 +1,15 @@
+## @file
+#  A library whose sources are partly in the submodule foo, by a DEFINE.
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = FooLib
+  MODULE_TYPE                    = BASE
+  LIBRARY_CLASS                  = FooLib
+  DEFINE FOO_TOP                 = foo
+  DEFINE FOO_PATH                = $(FOO_TOP)/src
+
+[Sources]
+  FooLib.c
+  $(FOO_PATH)/a.c   # the part's source

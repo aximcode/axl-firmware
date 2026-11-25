@@ -93,8 +93,9 @@ layout, CI, and the procedure for moving to a new edk2 tag:
 
 The scripts in this repository are Apache-2.0 ([LICENSE](LICENSE)). The firmware
 is edk2's, BSD-2-Clause-Patent, with bundled third-party parts under their own
-licences; every release carries them in `LICENSES/`, as found built into the
-images (OpenSSL, MbedTLS, Brotli, libfdt, Oniguruma and so on).
+licences; every release carries them in `LICENSES/` (OpenSSL, libfdt, libtl
+and others), and its manifest lists, per image, the licence texts that image
+needs (`images.<dir>.licenses`, derived from the build: RELEASE-FORMAT.md).
 
 ## Changes
 

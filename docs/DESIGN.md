@@ -281,17 +281,38 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     the Shell's registrations, or report of the break, as of 2026-11-25.
     - *The patch.* In `IsKeyRegistered`: when the input key carries no shift
       state (0 or `EFI_SHIFT_STATE_VALID` alone) and its UnicodeChar is a
-      control character 0x01-0x1A, a registration whose shift state is only
+      control character 0x01-0x1A other than Backspace, Tab, LF and CR
+      (0x08, 0x09, 0x0A, 0x0D), a registration whose shift state is only
       Control bits (left, right or both, with or without VALID) matches.
       Otherwise #12281's exact comparison stands (RCtrl+n does not fire on
       a plain 'n'), and the toggle state is compared exactly as before. The
       ScanCode and UnicodeChar must still be equal, so the Shell's 'c' and
-      's' registrations never match serial input. The range holds
-      Backspace, Tab, LF and CR (0x08, 0x09, 0x0A, 0x0D) too: a Ctrl+Enter
-      registration fires on a serial Enter, as any registration of Enter did
-      before `184fb6b1035e`. Each serial 0x03 calls the Shell's function
-      twice (its LCtrl and RCtrl registrations), as on 202602. The patch
-      also corrects upstream's comment in `TerminalConInRegisterKeyNotify`.
+      's' registrations never match serial input. Each serial 0x03 calls
+      the Shell's function twice (its LCtrl and RCtrl registrations), as on
+      202602. The patch also corrects upstream's comment in
+      `TerminalConInRegisterKeyNotify`.
+    - *BS, TAB, LF and CR excluded* (owner, 2026-11-25, before r2 was
+      published). The first r2 build matched the whole range 0x01-0x1A, so
+      a Ctrl+H, Ctrl+I, Ctrl+J or Ctrl+M registration fired on a serial
+      Backspace, Tab or Enter. axl-sdk showed the harm: plain typing with
+      Enter reached a stale Ctrl registration left on a keyboard device
+      that had gone, and its function ran from freed memory, a CPU
+      exception with no guard of its own. A terminal sends those four
+      characters for keys of their own, not for Ctrl chords, so they keep
+      #12281's exact match; Ctrl-C (0x03) and Ctrl-S (0x13) are unaffected.
+      *Checked* by compiling the patched `IsKeyRegistered` on the host
+      (`tests/firmware-tests.sh`, `tests/terminal-keys/`): it is cut from
+      the patched `TerminalConIn.c` at the pin and fed every character
+      0x00-0x7F with no shift state against a registration of the same
+      character with left, right or both Control bits, which must match
+      exactly 0x01-0x07, 0x0B, 0x0C and 0x0E-0x1A; with Shift or Alt
+      added, nothing; plus #12281's cases (RCtrl+n against a plain 'n',
+      a toggle state that differs, an input with Shift). A boot check of
+      Enter against a Ctrl+M registration would need a guest application
+      that registers one, which the release does not have; the host test
+      runs the same C. RED on the first r2 patch (it matched 0x08, 0x09,
+      0x0A and 0x0D too); on upstream's unpatched function it matches
+      nothing. The `ctrl-c` boot check stays as it was.
     - *Why TerminalDxe, not ShellPkg.* Registering 0x03 and 0x13 with no
       shift state in the Shell would fix only the Shell this release ships.
       The TerminalDxe patch serves every registrant of a Ctrl key: any
@@ -322,6 +343,80 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       serial Ctrl-S pause would need a ShellPkg change: §5.6.
     - *Checked on every release*: the `ctrl-c` boot (PROPERTIES.md), RED on
       r1's four installed image sets.
+
+22. **A licence list per image** (owner, 2026-11-25, for r2; asked by a
+    downstream consumer that vendors only some images, for example
+    `release/x64` and `release/aarch64`, and copies only the licence texts
+    they need). Each `images.<dir>` gains `licenses`: a list of `{path,
+    chosen}` (RELEASE-FORMAT.md). Format stays 2: a field is added, none
+    changed, and a consumer that does not read it is unaffected.
+    - *Derived from the build, not by hand.* `build.sh` passes `-y
+      <ws>/report-<ARCH>-<TARGET>.txt -Y LIBRARY -Y FLASH` to every
+      `build`. Its FLASH section lists the modules in each volume of each
+      FD, nested volumes after their parents (X64's `OVMF_CODE`:
+      FVMAIN_COMPACT, then PEIFV and DXEFV inside it, and SECFV;
+      AARCH64's `QEMU_EFI`: FVMAIN_COMPACT, then FVMAIN inside it); its
+      LIBRARY section the library instances linked into each module. A
+      part (an edk2 submodule) is in an image when a module in its code
+      FD, or a library linked into it, lists a source inside the
+      submodule in its INF's `[Sources]`, `[Sources.common]` or
+      `[Sources.<ARCH>]`, `[Defines]` DEFINEs expanded, entries for
+      another tool family than GCC left out. The INFs are read where
+      `build` reads them (the patched overlay first, then the source).
+      Nothing maps a part to a library by hand: at the pin the INFs that
+      reach a submodule are `CryptoPkg/Library/OpensslLib/OpensslLib*.inf`
+      (`DEFINE OPENSSL_PATH = openssl`), `CryptoPkg/Library/MbedTlsLib/MbedTlsLib*.inf`,
+      `MdeModulePkg/Library/BrotliCustomDecompressLib` (`brotli/c/...`),
+      `MdePkg/Library/BaseFdtLib` (`DEFINE FDT_LIB_PATH = libfdt/libfdt`),
+      `MdePkg/Library/MipiSysTLib` (`DEFINE MIPI_SOURCE_PATH =
+      mipisyst/library/src`), `SecurityPkg/DeviceSecurity/SpdmLib/Spdm*.inf`
+      (`libspdm/library/...`), `MdePkg/Library/ArmTransferListLib`
+      (`libtl/src/generic/...`), plus `RegularExpressionDxe` (oniguruma),
+      `RedfishPkg/Library/JsonLib` (jansson) and `TcgTpmPkg`'s `TpmLib`
+      (TPM), which neither platform builds; BaseTools' own Brotli is a
+      host tool and in no image.
+    - *Checked by another route.* The derivation reads the report's
+      volumes and library lists and the INFs. The check shares only the
+      volumes' module lists (the parser refuses an FV subsection without
+      its volume name or entries, which BuildReport.py writes when it
+      cannot read a volume's `.Fv.txt`), and reads neither the library
+      lists nor the INFs: for each module it finds the module's build
+      directory (or its FILE_GUID twin's, by `MODULE_FILE`), the libraries
+      in its `static_library_files.lst`, and in their `OUTPUT` the first
+      prerequisite of every object's gcc `.deps` file, the source
+      compiled. A module with objects but no list, or an object without
+      `.deps`, is a failure. So only compiled sources count on both
+      routes: an INF's `[Sources]` headers do not make a part, and a
+      feature flag on an entry is not evaluated (an entry it turns off
+      would count, and the routes would then disagree, loudly). The two
+      must name the same parts (they do, on all four images). The check also refuses an
+      entry not `{path, chosen}`, a path that is not a file in
+      `LICENSES/` or not among the top-level `licenses`, a list without
+      edk2's licence, and a dual-licensed part without both its texts and
+      exactly its permissive one chosen.
+    - *The dual-licensed parts.* libfdt is BSD-2-Clause OR GPL-2.0+, in
+      two files named so; libtl MIT OR GPL-2.0-or-later, in
+      `LICENSE-MIT.md` and `LICENSE-GPL-2.0-or-later.md`, with a
+      `LICENSE.md` stating the choice. The release relies on the
+      permissive one, so it is `chosen: true` and the GPL text false;
+      libtl's `LICENSE.md` is no choice and is true. Mbed TLS is
+      Apache-2.0 OR GPL-2.0-or-later too, but in one `LICENSE` holding
+      both texts: one entry, true. Mbed TLS is in no r2 image anyway.
+    - *r2's lists.* X64 (both flavours): edk2 and OpenSSL (TlsDxe,
+      IScsiDxe and Hash2DxeCrypto among the modules linking
+      OpensslLib). AARCH64: edk2, OpenSSL, libfdt (ArmPlatformPkg's Sec
+      and PlatformPei, ArmVirtPkg's MemoryInitPei link BaseFdtLib) and
+      libtl (Sec and PlatformPei link ArmTransferListLib). Brotli, Mbed
+      TLS, MIPI SyS-T and libspdm are compiled into no module of either
+      image (no FV module links their libraries); their texts stay in
+      the top-level `licenses`, which still lists every part whose
+      sources or headers a module's makefile names (the include paths
+      of MdePkg, MdeModulePkg and CryptoPkg name them).
+    - *The report does not change the images.* It is written after
+      GenFds. Measured on AlmaLinux 10 x86_64, gcc 14: X64 DEBUG and
+      RELEASE built clean with and without `-y`, byte for byte the same
+      `code.fd`, `vars.fd` and `Shell.efi` (X64 is reproducible; AARCH64
+      is not, §5.2, so it cannot be compared so).
 
 ## 5. Open decisions (the owner's)
 

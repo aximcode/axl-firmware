@@ -1,0 +1,6 @@
+[Defines]
+  BASE_NAME = Dxe
+  MODULE_TYPE = DXE_DRIVER
+
+[Sources]
+  Dxe.c

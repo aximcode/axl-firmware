@@ -1,0 +1,6 @@
+[Defines]
+  BASE_NAME = Other
+  MODULE_TYPE = DXE_DRIVER
+
+[Sources]
+  Other.c

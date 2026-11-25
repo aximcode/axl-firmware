@@ -1,0 +1,6 @@
+[Defines]
+  BASE_NAME                      = UnusedLib
+  LIBRARY_CLASS                  = UnusedLib
+
+[Sources]
+  unused/u.c

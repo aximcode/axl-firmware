@@ -511,6 +511,12 @@ done
         for a in "$@"; do
             cmd+=(--pcd "$a")
         done
+        # edk2's build report: the modules in each firmware volume (FLASH)
+        # and the libraries linked into each (LIBRARY), from which each
+        # image's licence list is derived (lib/axlfw/licenses.py). It is
+        # written after the images and does not change their bytes
+        # (DESIGN §4.22).
+        cmd+=(-y "$ws/report-$arch-$target.txt" -Y LIBRARY -Y FLASH)
         echo "+ ${cmd[*]}"
         nice -n 19 "${cmd[@]}" >"$ws/build-$arch-$target.log" 2>&1 || {
             tail -40 "$ws/build-$arch-$target.log" >&2

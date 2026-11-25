@@ -23,13 +23,15 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
-from axlfw import boot, checks, install
+from axlfw import boot, checks, install, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -79,6 +81,10 @@ class Image:
     def descriptor(self, release: str) -> str:
         """Its QEMU firmware descriptor's file name: DEBUG first by name."""
         return install.descriptor_name(self.dir, release)
+
+    def report(self, ws: Path) -> Path:
+        """edk2's build report of its build (build.sh: -y, -Y LIBRARY -Y FLASH)."""
+        return ws / f"report-{lic_mod.EDK2_ARCH[self.arch]}-{self.flavour}.txt"
 
 
 IMAGES = tuple(Image(a, f) for f in checks.FLAVOURS for a in checks.ARCHES)
@@ -138,10 +144,10 @@ def stage_images(ws: Path, toolchain: str, stage: Path) -> list[str]:
     return problems
 
 
-# Licence files a submodule names otherwise than LICENSE*, COPYING*,
-# NOTICE* or LICENCE*: libfdt is dual-licensed by two files named for
-# their licences.
-LICENSE_FILES = {"MdePkg/Library/BaseFdtLib/libfdt": ("BSD-2-Clause", "GPL")}
+# Licence files a submodule may name otherwise than LICENSE*, COPYING*,
+# NOTICE* or LICENCE*: a dual-licensed part's (libfdt's two are named for
+# their licences).
+LICENSE_FILES = {sub: tuple(choice) for sub, choice in lic_mod.DUAL.items()}
 
 
 def licenses(src: Path, ws: Path, stage: Path) -> tuple[list[str], list[str]]:
@@ -159,9 +165,7 @@ def licenses(src: Path, ws: Path, stage: Path) -> tuple[list[str], list[str]]:
     makefiles = [p.read_text(errors="replace") for p in (ws / "Build").rglob("GNUmakefile")]
     if not makefiles:
         return copied, [f"{ws / 'Build'}: no module GNUmakefile, so the parts built in are unknown"]
-    gitmodules = (src / ".gitmodules").read_text()
-    paths = [line.split("=", 1)[1].strip() for line in gitmodules.splitlines() if line.strip().startswith("path")]
-    for sub in sorted(paths):
+    for sub in submodule_paths(src):
         if not any(f"{sub}/" in m for m in makefiles):
             continue
         names = sorted(
@@ -182,6 +186,49 @@ def licenses(src: Path, ws: Path, stage: Path) -> tuple[list[str], list[str]]:
             shutil.copyfile(p, dest / p.name)
             copied.append(f"LICENSES/{dest.name}/{p.name}")
     return copied, problems
+
+
+def submodule_paths(src: Path) -> list[str]:
+    """The submodules' paths in the edk2 tree, from its .gitmodules, sorted."""
+    gitmodules = (src / ".gitmodules").read_text()
+    return sorted(
+        line.split("=", 1)[1].strip()
+        for line in gitmodules.splitlines()
+        if re.match(r"^\s*path\s*=", line)
+    )
+
+
+def image_licenses(
+    ws: Path, src: Path, toolchain: str, top: list[str], stage: Path
+) -> tuple[dict[str, list[dict[str, object]]], list[str]]:
+    """Each image's licence list, from its build report, and checked.
+
+    The list names the files, among top, of the parts its code FD's modules
+    compile from their INFs' [Sources] and their libraries' (the report's
+    route, lic_mod.image_parts). The check holds it against the parts the
+    build's objects were compiled from (lic_mod.compiled_parts, another
+    route), so a part the derivation misses is a failure.
+    """
+    roots = [ws / "overlay", src]
+    subs = submodule_paths(src)
+    out: dict[str, list[dict[str, object]]] = {}
+    problems: list[str] = []
+    for img in IMAGES:
+        path = img.report(ws)
+        try:
+            report = lic_mod.parse_report(path.read_text(errors="replace"))
+        except (OSError, lic_mod.ReportError) as err:
+            problems.append(f"{img.dir}: the build report {path}: {err}")
+            continue
+        fd, arch = lic_mod.CODE_FD[img.arch], lic_mod.EDK2_ARCH[img.arch]
+        parts, more = lic_mod.image_parts(report, fd, roots, subs, arch)
+        compiled, also = lic_mod.compiled_parts(report, fd, img.build(ws, toolchain) / arch, roots, subs)
+        problems += [f"{img.dir}: {x}" for x in more + also]
+        listed = lic_mod.image_licenses(parts, top)
+        problems += [f"{img.dir}: {x}" for x in lic_mod.missing_texts(parts, top)]
+        problems += lic_mod.check_image_licenses(img.dir, listed, top, stage, compiled)
+        out[img.dir] = listed
+    return out, problems
 
 
 # The symbols a debugger needs first: the DXE core, BDS and the Shell.
@@ -309,6 +356,11 @@ def assemble(a: AssembleArgs) -> int:
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         return 1
+    per_image, problems = image_licenses(a.ws, a.src, a.toolchain, lic, stage)
+    if problems:
+        print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
+        return 1
+    print("+ licence lists derived from the build reports and checked", flush=True)
     (stage / "descriptors").mkdir()
     for img in IMAGES:
         _json(stage / "descriptors" / img.descriptor(rel), descriptor(img, rel, a.tag, a.commit, ""))
@@ -339,6 +391,7 @@ def assemble(a: AssembleArgs) -> int:
             "secure_boot": False,
             "verified": verified[d],
             "measured": m,
+            "licenses": per_image[d],
         }
     epoch = int(datetime.datetime.strptime(a.release_date, "%m/%d/%Y").replace(tzinfo=datetime.timezone.utc).timestamp())
     symbols: dict[str, str] = {}
@@ -466,6 +519,11 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
         print(f"FAIL: {mpath}: {err}", file=sys.stderr)
         return 1
     problems: list[str] = []
+    top_raw = manifest.get("licenses")
+    top_list = cast("list[object]", top_raw) if isinstance(top_raw, list) else []
+    top = [x for x in top_list if isinstance(x, str)]
+    if not top or len(top) != len(top_list):
+        problems.append(f"manifest licenses {top_raw!r}: not a list of paths")
     if manifest.get("format") != FORMAT:
         problems.append(f"manifest format {manifest.get('format')!r}, not {FORMAT}")
     if sorted(images) != sorted(img.dir for img in IMAGES):
@@ -496,6 +554,7 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
         else:
             if got != descriptor(img, rel, tag, commit, ""):
                 problems.append(f"{name}: not the descriptor of {img.dir}")
+        problems += lic_mod.check_image_licenses(img.dir, entry.get("licenses"), top, release_dir, None)
         problems += checks.check_image(img.arch, release_dir / img.dir / "code.fd")
         problems += checks.check_shell(img.arch, release_dir / img.dir / img.shell)
     if problems:

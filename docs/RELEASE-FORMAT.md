@@ -42,8 +42,9 @@ axl-firmware-<release>/
   manifest.json
   patches/*.patch             the patches applied to edk2
   LICENSES/edk2-License.txt   edk2's (BSD-2-Clause-Patent)
-  LICENSES/<submodule>/...    each third-party part built into an image: its
+  LICENSES/<submodule>/...    each third-party part the build compiled: its
                               licence files, the submodule's path with / as _
+                              (which of them each image needs: images.<dir>.licenses)
 ```
 
 The DEBUG directories are the bare arch names because DEBUG is the default
@@ -117,7 +118,7 @@ Paths are relative to the release directory. Every value below is present.
 | `images` | object | one entry per image, keyed by its directory: `x64`, `aarch64`, `release/x64`, `release/aarch64` |
 | `descriptors` | [string] | the descriptors, `descriptors/<name>` |
 | `symbols.x64`, `symbols.aarch64` | string | the symbols tarballs' asset names |
-| `licenses` | [string] | the licence files, `LICENSES/...` |
+| `licenses` | [string] | the licence files, `LICENSES/...`: edk2's, and every file of each third-party part (edk2 submodule) whose sources the build compiled or whose headers it used; a superset of every image's `licenses` |
 
 Each `images.<dir>`:
 
@@ -145,6 +146,37 @@ Each `images.<dir>`:
 | `verified.drivers` | [{`name`, `guid`}] | the FFS files the code image was checked to hold |
 | `verified.absent` | [{`name`, `guid`}] | the FFS files it was checked not to hold |
 | `measured` | object | what the boot checks measured (below) |
+| `licenses` | [{`path`, `chosen`}] | the licence texts this image needs (below), in order: edk2's first, then each part's files by the part's path |
+
+Each `images.<dir>.licenses` entry, from r2 on:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `path` | string | a licence file, relative to the release directory, `LICENSES/...`; always one of the top-level `licenses` |
+| `chosen` | bool | `false` only for the licence a dual-licensed part is *not* taken under; `true` for every other file |
+
+The list holds `LICENSES/edk2-License.txt` always, and every file of each
+third-party part compiled into a module of the image's code firmware
+device, nested (compressed) volumes included, through the module's own
+sources or a library linked into it. A part whose sources no module of the
+image compiles is not listed. The dual-licensed parts are taken under their
+permissive licence: libfdt (`MdePkg/Library/BaseFdtLib/libfdt`) under
+BSD-2-Clause (`BSD-2-Clause` true, `GPL` false), libtl
+(`MdePkg/Library/ArmTransferListLib/libtl`) under MIT (`LICENSE-MIT.md`
+true, `LICENSE-GPL-2.0-or-later.md` false; its `LICENSE.md`, which states
+the choice, true). Mbed TLS ships both its licences in one `LICENSE`, so it
+is one entry, true. A consumer that vendors some images copies the union of
+their lists, each `path` as it is, and may leave out the `chosen: false`
+texts. The shape is stable: a field may be added, none removed or changed.
+How the list is derived and checked: [PROPERTIES.md](PROPERTIES.md),
+DESIGN.md §4.22.
+
+r2's lists (DEBUG and RELEASE alike):
+
+| Image | `licenses` |
+|---|---|
+| `x64`, `release/x64` | `edk2-License.txt`; `CryptoPkg_Library_OpensslLib_openssl/LICENSE.txt` |
+| `aarch64`, `release/aarch64` | `edk2-License.txt`; `CryptoPkg_Library_OpensslLib_openssl/LICENSE.txt`; `MdePkg_Library_ArmTransferListLib_libtl/` `LICENSE-GPL-2.0-or-later.md` (false), `LICENSE-MIT.md`, `LICENSE.md`; `MdePkg_Library_BaseFdtLib_libfdt/` `BSD-2-Clause`, `GPL` (false) |
 
 Each `images.<dir>.measured`:
 
@@ -203,6 +235,7 @@ release is advertised. Other releases' directories stay.
 for length: `images` shows only `x64` (the other three sets have the same
 fields, AARCH64's `measured` adding `cpu_models_reach_shell`),
 `verified.drivers` its first two of 24, and `licenses` its first two of 11.
+r1 had no `images.<dir>.licenses`: the x64 entry's is r2's, added by hand.
 That run predates `edid=off` on the GOP checks, so its 1280x800 sizes were
 measured with QEMU's EDID on, and the bounded patch 0003, so that patch's
 `sha256` differs from the current file's.
@@ -339,7 +372,11 @@ measured with QEMU's EDID on, and the bounded patch 0003, so that patch's
           "size": [1280, 800],
           "drawn": true
         }
-      }
+      },
+      "licenses": [
+        {"path": "LICENSES/edk2-License.txt", "chosen": true},
+        {"path": "LICENSES/CryptoPkg_Library_OpensslLib_openssl/LICENSE.txt", "chosen": true}
+      ]
     }
   },
   "descriptors": [

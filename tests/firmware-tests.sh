@@ -17,6 +17,9 @@
 #     submodule); a file the tree's .gitignore ignores (a build's output)
 #     passes;
 #   - each checked GUID against its INF in that source (`source-guids`);
+#   - patch 0004's IsKeyRegistered, cut from the patched TerminalConIn.c and
+#     compiled on the host (tests/terminal-keys/): the characters a Ctrl
+#     registration matches from a terminal, exactly;
 #   - real images: the distribution's OVMF (Fedora/EL paths) as controls,
 #     which must fail exactly (no VirtioFsDxe, no pointer drivers; the
 #     Secure Boot image holding SecureBootConfigDxe), and an installed
@@ -216,6 +219,47 @@ MdePkg/Library/BaseFdtLib/libfdt: S README" -- "$script" check-source "$c"
         "$script" check-source "$c"
     git -C "$c" tag -f "$tag" "$commit" >/dev/null
     expect "the copy put back" 0 "$c: $tag at $commit, as committed" "" -- "$script" check-source "$c"
+fi
+
+# Patch 0004's IsKeyRegistered, compiled on the host (tests/terminal-keys/):
+# which shift-less characters a Ctrl registration of the same character
+# matches. Ctrl+A to Ctrl+Z, but not Backspace, Tab, LF or CR, which a
+# terminal sends for keys of their own (DESIGN §4.21).
+terminal_keys() {
+    local t=$tmp/terminal-keys f=MdeModulePkg/Universal/Console/TerminalDxe/TerminalConIn.c
+    mkdir -p "$t/$(dirname "$f")"
+    cp "$src/$f" "$t/$f"
+    chmod u+w "$t/$f"
+    GIT_CEILING_DIRECTORIES=$tmp git -C "$t" apply --include="$f" "$here/patches/0004-terminal-control-keys.patch" || return 1
+    # The function, from its return type to its closing brace (edk2's
+    # sources have CRLF line ends).
+    tr -d '\r' <"$t/$f" |
+        awk '/^IsKeyRegistered \($/ { print prev; on = 1 } on { print } on && /^}$/ { exit } { prev = $0 }' \
+            >"$t/IsKeyRegistered.c"
+    grep -q '^IsKeyRegistered ($' "$t/IsKeyRegistered.c" || return 1
+    gcc -std=c99 -Wall -Wextra -Werror -I "$t" -I "$here/tests/terminal-keys" \
+        -o "$t/keys" "$here/tests/terminal-keys/main.c" || return 1
+    "$t/keys"
+}
+if [[ ! -e "$src/.git" ]]; then
+    skip source "patch 0004's key matching: no edk2 source at $src"
+elif ! command -v gcc >/dev/null; then
+    skip source "patch 0004's key matching: no gcc"
+else
+    ctrl_set="01 02 03 04 05 06 07 0b 0c 0e 0f 10 11 12 13 14 15 16 17 18 19 1a"
+    expect "patch 0004 matches Ctrl+A to Ctrl+Z, not BS, TAB, LF or CR" 0 "lctrl: $ctrl_set
+rctrl: $ctrl_set
+both: $ctrl_set
+lctrl+lshift:
+lalt:
+rctrl n, plain n: 0
+rctrl n, rctrl n: 1
+plain 03, plain 03: 1
+plain 0d, plain 0d: 1
+lctrl 03, valid-only 03: 1
+lctrl 0d, valid-only 0d: 0
+lctrl 03, plain 03, toggle differs: 0
+lctrl 03, lshift 03: 0" "" -- terminal_keys
 fi
 
 # Real images. The distribution's are controls, judged only at the digest

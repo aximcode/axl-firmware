@@ -1,0 +1,15 @@
+[submodule "PartPkg/Library/FooLib/foo"]
+	path = PartPkg/Library/FooLib/foo
+	url = https://example.invalid/foo.git
+[submodule "PartPkg/Library/BarLib/bar"]
+	path = PartPkg/Library/BarLib/bar
+	url = https://example.invalid/bar.git
+[submodule "PartPkg/Library/IaLib/ia"]
+	path = PartPkg/Library/IaLib/ia
+	url = https://example.invalid/ia.git
+[submodule "PartPkg/Library/UnusedLib/unused"]
+	path = PartPkg/Library/UnusedLib/unused
+	url = https://example.invalid/unused.git
+[submodule "MdePkg/Library/BaseFdtLib/libfdt"]
+	path = MdePkg/Library/BaseFdtLib/libfdt
+	url = https://example.invalid/libfdt.git

@@ -1,0 +1,8 @@
+[Defines]
+  BASE_NAME                      = BaseFdtLib
+  LIBRARY_CLASS                  = FdtLib
+  DEFINE FDT_LIB_PATH            = libfdt/libfdt
+
+[Sources]
+  FdtLib.c
+  $(FDT_LIB_PATH)/fdt.c

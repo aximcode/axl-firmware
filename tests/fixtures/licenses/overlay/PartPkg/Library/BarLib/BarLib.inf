@@ -1,0 +1,10 @@
+## @file
+#  The overlay's copy, first in PACKAGES_PATH: a patch added a source in bar.
+##
+[Defines]
+  BASE_NAME                      = BarLib
+  LIBRARY_CLASS                  = BarLib
+
+[Sources.common]
+  BarLib.c
+  ../BarLib/./bar/b.c | GCC

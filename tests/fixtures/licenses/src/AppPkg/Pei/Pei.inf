@@ -1,0 +1,6 @@
+[Defines]
+  BASE_NAME = Pei
+  MODULE_TYPE = DXE_DRIVER
+
+[Sources]
+  Pei.c

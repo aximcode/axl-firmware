@@ -1,0 +1,12 @@
+[Defines]
+  BASE_NAME                      = IaLib
+  LIBRARY_CLASS                  = IaLib
+
+[Sources]
+  IaLib.c
+
+[Sources.IA32, Sources.ARM]
+  ia/x.c
+
+[Sources.X64]
+  ia/y.c | MSFT

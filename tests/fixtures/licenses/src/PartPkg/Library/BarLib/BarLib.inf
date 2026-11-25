@@ -1,0 +1,6 @@
+[Defines]
+  BASE_NAME                      = BarLib
+  LIBRARY_CLASS                  = BarLib
+
+[Sources]
+  BarLib.c

@@ -127,9 +127,14 @@ what was found.
    the Shell's key registrations (`ShellProtocol.c`, `Shell.c`). Upstream
    meant its exact match (DESIGN.md §4.21), so expect to keep it: drop it
    only when upstream's `IsKeyRegistered` matches a serial 0x03 to a
-   Control registration again. A Shell that registers 0x03 with no shift
-   state fixes only the Shell, so 0004 stays for other registrants. Rebase
-   it with the same care: the `ctrl-c` boot check shows it still works.
+   Control registration again, and still keeps Backspace, Tab, LF and CR
+   (0x08, 0x09, 0x0A, 0x0D) to an exact match (if upstream matches those
+   to a Control registration too, keep the patch's exclusion of them). A
+   Shell that registers 0x03 with no shift state fixes only the Shell, so
+   0004 stays for other registrants. Rebase it with the same care: the
+   `ctrl-c` boot check shows it still works, and `tests/firmware-tests.sh`
+   compiles the patched function on the host and checks the exact set of
+   characters it matches (DESIGN.md §4.21).
    Then rebase what remains: copy the tracked files of the packages they touch
    (`git ls-files -z -- OvmfPkg ArmVirtPkg MdeModulePkg | tar ...`), apply the patches in
    order with `git apply` (resolve by hand where one fails), and regenerate

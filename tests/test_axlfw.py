@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, install, release  # noqa: E402
+from axlfw import boot, checks, fv, install, licenses, release  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -434,6 +434,400 @@ class SymbolsTests(unittest.TestCase):
             )
 
 
+FOO = "PartPkg/Library/FooLib/foo"
+BAR = "PartPkg/Library/BarLib/bar"
+FDT = "MdePkg/Library/BaseFdtLib/libfdt"
+UNUSED = "PartPkg/Library/UnusedLib/unused"
+# Each fixture part's licence files, as release.licenses copies them.
+FIXTURE_TOP = [
+    "LICENSES/edk2-License.txt",
+    "LICENSES/MdePkg_Library_BaseFdtLib_libfdt/BSD-2-Clause",
+    "LICENSES/MdePkg_Library_BaseFdtLib_libfdt/GPL",
+    "LICENSES/PartPkg_Library_BarLib_bar/COPYING",
+    "LICENSES/PartPkg_Library_FooLib_foo/LICENSE",
+    "LICENSES/PartPkg_Library_IaLib_ia/LICENSE",
+    "LICENSES/PartPkg_Library_UnusedLib_unused/LICENSE.txt",
+]
+FIXTURE_LIST: list[dict[str, object]] = [
+    {"path": "LICENSES/edk2-License.txt", "chosen": True},
+    {"path": "LICENSES/MdePkg_Library_BaseFdtLib_libfdt/BSD-2-Clause", "chosen": True},
+    {"path": "LICENSES/MdePkg_Library_BaseFdtLib_libfdt/GPL", "chosen": False},
+    {"path": "LICENSES/PartPkg_Library_BarLib_bar/COPYING", "chosen": True},
+    {"path": "LICENSES/PartPkg_Library_FooLib_foo/LICENSE", "chosen": True},
+]
+
+
+class LicenceTests(unittest.TestCase):
+    """The per-image licence lists: the report's derivation and the check."""
+
+    def setUp(self) -> None:
+        self._t = tempfile.TemporaryDirectory()
+        self.root = Path(self._t.name)
+        shutil.copytree(FIXTURES / "licenses", self.root / "fx")
+        self.src = self.root / "fx" / "src"
+        self.overlay = self.root / "fx" / "overlay"
+        (self.src / "gitmodules").rename(self.src / ".gitmodules")
+        self.roots = [self.overlay, self.src]
+        self.subs = release.submodule_paths(self.src)
+        text = (FIXTURES / "licenses" / "report.txt").read_text()
+        text = text.replace("@SRC@", str(self.src)).replace("@OVERLAY@", str(self.overlay))
+        self.report_text = text.replace("@WS@", str(self.root / "ws"))
+        self.stage = self.root / "stage"
+        for path in FIXTURE_TOP:
+            (self.stage / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.stage / path).write_text(path)
+
+    def tearDown(self) -> None:
+        self._t.cleanup()
+
+    def test_submodules(self) -> None:
+        self.assertEqual(self.subs, [FDT, BAR, FOO, "PartPkg/Library/IaLib/ia", UNUSED])
+
+    def test_parse_report(self) -> None:
+        r = licenses.parse_report(self.report_text)
+        self.assertEqual(r.content, "LIBRARY, FLASH")
+        self.assertEqual(
+            {fd: [(v.name, v.entries) for v in vols] for fd, vols in r.fds.items()},
+            {
+                "FIXTURE_CODE": [
+                    ("FVMAIN_COMPACT", ["PEI Apriori", f"Pei ({self.src}/AppPkg/Pei/Pei.inf)", "DXEFV"]),
+                    (
+                        "DXEFV",
+                        ["DXE Apriori", f"Dxe ({self.src}/AppPkg/Dxe/Dxe.inf)", f"{self.src}/AppPkg/Logo.bmp"],
+                    ),
+                ],
+                "FIXTURE_OTHER": [("OTHERFV", [f"Other ({self.src}/AppPkg/Other/Other.inf)"])],
+            },
+        )
+        self.assertEqual(
+            r.modules,
+            {
+                "AppPkg/Pei/Pei.inf": [f"{self.src}/MdePkg/Library/BaseFdtLib/BaseFdtLib.inf"],
+                "AppPkg/Dxe/Dxe.inf": [
+                    f"{self.src}/PartPkg/Library/FooLib/FooLib.inf",
+                    f"{self.overlay}/PartPkg/Library/BarLib/BarLib.inf",
+                    f"{self.src}/PartPkg/Library/IaLib/IaLib.inf",
+                ],
+                "AppPkg/Other/Other.inf": [f"{self.src}/PartPkg/Library/UnusedLib/UnusedLib.inf"],
+            },
+        )
+
+    def test_not_a_report(self) -> None:
+        cases = {
+            "nothing": ("", "no 'Report Content:' line: not an edk2 build report"),
+            "no flash": (
+                self.report_text.replace("LIBRARY, FLASH", "LIBRARY"),
+                "the report holds LIBRARY, not LIBRARY and FLASH",
+            ),
+            "no FD": (
+                self.report_text.replace("FD Name:", "FD Gone:"),
+                "no firmware device: the report has no FLASH section",
+            ),
+        }
+        for label, (text, want) in cases.items():
+            with self.subTest(label), self.assertRaises(licenses.ReportError) as cm:
+                licenses.parse_report(text)
+            self.assertEqual(str(cm.exception), want)
+
+    def test_inf_sources(self) -> None:
+        foo = self.src / "PartPkg/Library/FooLib/FooLib.inf"
+        self.assertEqual(licenses.inf_sources(foo, "X64"), ["FooLib.c", "foo/src/a.c"])
+        ia = self.src / "PartPkg/Library/IaLib/IaLib.inf"
+        self.assertEqual(licenses.inf_sources(ia, "X64"), ["IaLib.c"])
+        self.assertEqual(licenses.inf_sources(ia, "ARM"), ["IaLib.c", "ia/x.c"])
+        foo.write_text(foo.read_text().replace("DEFINE FOO_TOP", "DEFINE FOO_GONE"))
+        with self.assertRaises(ValueError) as cm:
+            licenses.inf_sources(foo, "X64")
+        self.assertEqual(str(cm.exception), f"{foo}: [Sources] entry '$(FOO_PATH)/a.c': no DEFINE for $(FOO_TOP)")
+
+    def test_image_parts(self) -> None:
+        r = licenses.parse_report(self.report_text)
+        # The nested DXEFV's Dxe counts; FIXTURE_OTHER's Other does not; the
+        # overlay's BarLib, first in PACKAGES_PATH, compiles bar; IaLib's
+        # part is IA32's and ARM's only, and its X64 entry MSFT's.
+        self.assertEqual(licenses.image_parts(r, "FIXTURE_CODE", self.roots, self.subs, "X64"), ({FOO, BAR, FDT}, []))
+        self.assertEqual(licenses.image_parts(r, "FIXTURE_OTHER", self.roots, self.subs, "X64"), ({UNUSED}, []))
+        self.assertEqual(
+            licenses.image_parts(r, "NONE", self.roots, self.subs, "X64"),
+            (set[str](), ["the build report has no FD NONE, or no volume in it"]),
+        )
+
+    def test_image_parts_problems(self) -> None:
+        text = self.report_text.replace("0x00001000 ", "0x00001000 4A1D2C3B-0000-0000-0000-000000000000\n0x00001100 ")
+        text = text.replace("Module INF Path:      AppPkg/Pei/Pei.inf", "Module INF Path:      AppPkg/Pei/Gone.inf")
+        r = licenses.parse_report(text)
+        self.assertEqual(
+            licenses.image_parts(r, "FIXTURE_CODE", self.roots, self.subs, "X64"),
+            (
+                {FOO, BAR},
+                [
+                    f"FD FIXTURE_CODE, volume FVMAIN_COMPACT: Pei ({self.src}/AppPkg/Pei/Pei.inf) has no module section",
+                    "FD FIXTURE_CODE, volume DXEFV: cannot tell what '4A1D2C3B-0000-0000-0000-000000000000' is",
+                ],
+            ),
+        )
+
+    def test_image_licenses(self) -> None:
+        self.assertEqual(licenses.image_licenses({FOO, BAR, FDT}, FIXTURE_TOP), FIXTURE_LIST)
+        self.assertEqual(licenses.image_licenses(set(), FIXTURE_TOP), FIXTURE_LIST[:1])
+
+    def _check(self, listed: object, parts: set[str] | None = None) -> list[str]:
+        return licenses.check_image_licenses("x64", listed, FIXTURE_TOP, self.stage, parts)
+
+    def test_check_passes(self) -> None:
+        self.assertEqual(self._check(FIXTURE_LIST, {FOO, BAR, FDT}), [])
+        self.assertEqual(self._check(FIXTURE_LIST), [])
+
+    def test_check_refuses(self) -> None:
+        edk2, bsd, gpl, bar, foo = FIXTURE_LIST
+        stray = "LICENSES/PartPkg_Library_FooLib_foo/NOTICE"
+        cases: dict[str, tuple[object, str]] = {
+            "not a list": ({"path": "x"}, "x64: licenses is {'path': 'x'}, not a list"),
+            "not in top": (
+                [*FIXTURE_LIST, {"path": stray, "chosen": True}],
+                f"x64: {stray} is not among the top-level licenses\nx64: {stray} is not a file in LICENSES/",
+            ),
+            "edk2 missing": ([bsd, gpl, bar, foo], "x64: edk2's licence LICENSES/edk2-License.txt is not listed, chosen"),
+            "edk2 not chosen": (
+                [{**edk2, "chosen": False}, bsd, gpl, bar, foo],
+                "x64: edk2's licence LICENSES/edk2-License.txt is not listed, chosen\n"
+                "x64: LICENSES/edk2-License.txt is not one licence of a choice, so it must be chosen",
+            ),
+            "both chosen": (
+                [edk2, bsd, {**gpl, "chosen": True}, bar, foo],
+                f"x64: {FDT} is dual-licensed: ['BSD-2-Clause', 'GPL'] must be listed with exactly "
+                "['BSD-2-Clause'] chosen; chosen: ['BSD-2-Clause', 'GPL']",
+            ),
+            "none chosen": (
+                [edk2, {**bsd, "chosen": False}, gpl, bar, foo],
+                f"x64: {FDT} is dual-licensed: ['BSD-2-Clause', 'GPL'] must be listed with exactly "
+                "['BSD-2-Clause'] chosen; chosen: []",
+            ),
+            "GPL chosen instead": (
+                [edk2, {**bsd, "chosen": False}, {**gpl, "chosen": True}, bar, foo],
+                f"x64: {FDT} is dual-licensed: ['BSD-2-Clause', 'GPL'] must be listed with exactly "
+                "['BSD-2-Clause'] chosen; chosen: ['GPL']",
+            ),
+            "one of a choice unlisted": (
+                [edk2, bsd, bar, foo],
+                f"x64: {FDT}: LICENSES/MdePkg_Library_BaseFdtLib_libfdt/GPL is not listed",
+            ),
+            "a plain licence not chosen": (
+                [edk2, bsd, gpl, {**bar, "chosen": False}, foo],
+                f"x64: {bar['path']} is not one licence of a choice, so it must be chosen",
+            ),
+            "listed twice": ([*FIXTURE_LIST, foo], f"x64: {foo['path']} listed twice"),
+            "out of order": (
+                [edk2, bar, bsd, gpl, foo],
+                f"x64: not in order (edk2's licence first, then by path): "
+                f"{[edk2['path'], bar['path'], bsd['path'], gpl['path'], foo['path']]}",
+            ),
+            "a key more": (
+                [*FIXTURE_LIST[:4], {**foo, "spdx": "MIT"}],
+                f"x64: licence entry {({**foo, 'spdx': 'MIT'})!r} is not {{path, chosen}}",
+            ),
+            "chosen not a bool": (
+                [*FIXTURE_LIST[:4], {**foo, "chosen": 1}],
+                f"x64: licence entry {({**foo, 'chosen': 1})!r}: path not a string, or chosen not a bool",
+            ),
+            "escaping": (
+                [edk2, {"path": "LICENSES/../manifest.json", "chosen": True}, bsd, gpl, bar, foo],
+                "x64: LICENSES/../manifest.json is not among the top-level licenses\n"
+                "x64: LICENSES/../manifest.json is not a file in LICENSES/",
+            ),
+        }
+        for label, (listed, want) in cases.items():
+            with self.subTest(label):
+                self.assertEqual("\n".join(self._check(listed)), want)
+        (self.stage / str(foo["path"])).unlink()
+        self.assertEqual(self._check(FIXTURE_LIST), [f"x64: {foo['path']} is not a file in LICENSES/"])
+
+    def test_check_against_parts(self) -> None:
+        # A part compiled in but unlisted; one listed but not compiled in.
+        self.assertEqual(
+            self._check(FIXTURE_LIST, {FOO, BAR, FDT, UNUSED}),
+            ["x64: LICENSES/PartPkg_Library_UnusedLib_unused/LICENSE.txt is not listed, but its part is compiled into the image"],
+        )
+        self.assertEqual(
+            self._check(FIXTURE_LIST, {BAR, FDT}),
+            ["x64: LICENSES/PartPkg_Library_FooLib_foo/LICENSE is listed, but its part is not in the image"],
+        )
+        self.assertEqual(
+            self._check(FIXTURE_LIST, {FOO, BAR, FDT, "Gone/sub"}),
+            ["x64: Gone/sub is in the image, but the release has no licence file of it"],
+        )
+
+    def test_report_shapes(self) -> None:
+        # CRLF line ends; a module built twice (two sections, one INF); a
+        # wrapped Module INF Path.
+        twice = self.report_text.replace(
+            "Module INF Path:      AppPkg/Dxe/Dxe.inf", "Module INF Path:      AppPkg/Dxe\n/Dxe.inf"
+        )
+        twin = (
+            ">" + "=" * 118 + "<\nModule Summary\nModule Name:          Dxe\n"
+            "Module INF Path:      AppPkg/Dxe/Dxe.inf\n" + "=" * 120 + "\n>" + "-" * 118 + "<\nLibrary\n" + "-" * 120 + "\n"
+            f"{self.src}/PartPkg/Library/UnusedLib/UnusedLib.inf\n{{UnusedLib}}\n<" + "-" * 118 + ">\n<" + "=" * 118 + ">\n"
+        )
+        r = licenses.parse_report((twice + twin).replace("\n", "\r\n"))
+        self.assertEqual(
+            r.modules["AppPkg/Dxe/Dxe.inf"],
+            [
+                f"{self.src}/PartPkg/Library/FooLib/FooLib.inf",
+                f"{self.overlay}/PartPkg/Library/BarLib/BarLib.inf",
+                f"{self.src}/PartPkg/Library/IaLib/IaLib.inf",
+                f"{self.src}/PartPkg/Library/UnusedLib/UnusedLib.inf",
+            ],
+        )
+        self.assertEqual(
+            licenses.image_parts(r, "FIXTURE_CODE", self.roots, self.subs, "X64"), ({FOO, BAR, FDT, UNUSED}, [])
+        )
+
+    def test_report_refused(self) -> None:
+        lib = f"{self.src}/PartPkg/Library/UnusedLib/UnusedLib.inf"
+        cases = {
+            "a library path with no class line": (
+                self.report_text.replace(f"{lib}\n{{UnusedLib:  Time = 4ms}}\n", f"{lib}\n"),
+                f"AppPkg/Other/Other.inf: a library path with no class line: {lib}",
+            ),
+            "a class line with no path": (
+                self.report_text.replace(f"{lib}\n", ""),
+                "AppPkg/Other/Other.inf: a library class line with no path: {UnusedLib:  Time = 4ms}",
+            ),
+            "a volume the report could not read": (
+                self.report_text.replace("Fv Name:            OTHERFV (1.0% Full)\n", ""),
+                "FD FIXTURE_OTHER: an FV subsection with no 'Fv Name:': the report could not read the volume",
+            ),
+            "a volume with no entry": (
+                self.report_text.replace(f"0x00000078 Other ({self.src}/AppPkg/Other/Other.inf)\n", ""),
+                "FD FIXTURE_OTHER: an FV subsection with volume OTHERFV with no entry: the report could not read the volume",
+            ),
+        }
+        for label, (text, want) in cases.items():
+            with self.subTest(label), self.assertRaises(licenses.ReportError) as cm:
+                licenses.parse_report(text)
+            self.assertEqual(str(cm.exception), want)
+
+    def test_inf_fields(self) -> None:
+        inf = self.src / "PartPkg/Library/FooLib/FooLib.inf"
+        inf.write_text(
+            "[Defines]\n  BASE_NAME = FooLib\n\n[Sources]\n  foo/a.nasm ||||gFlag\n  foo/b.c | GCC | TAG\n"
+            "  foo/c.c | MSFT | TAG\n  foo/d.h\n"
+        )
+        self.assertEqual(licenses.inf_sources(inf, "X64"), ["foo/a.nasm", "foo/b.c", "foo/d.h"])
+        self.assertEqual(licenses.parts_of("PartPkg/Library/FooLib/FooLib.inf", self.roots, self.subs, "X64"), {FOO})
+        # A header alone compiles nothing: no part.
+        inf.write_text("[Defines]\n  BASE_NAME = FooLib\n\n[Sources]\n  FooLib.c\n  foo/d.h\n")
+        self.assertEqual(licenses.parts_of("PartPkg/Library/FooLib/FooLib.inf", self.roots, self.subs, "X64"), set())
+
+    def test_libtl(self) -> None:
+        tl = "MdePkg/Library/ArmTransferListLib/libtl"
+        d = licenses.licence_dir(tl)
+        top = [licenses.EDK2_LICENSE, f"{d}/LICENSE-GPL-2.0-or-later.md", f"{d}/LICENSE-MIT.md", f"{d}/LICENSE.md"]
+        listed = licenses.image_licenses({tl}, top)
+        self.assertEqual(
+            listed,
+            [
+                {"path": licenses.EDK2_LICENSE, "chosen": True},
+                {"path": f"{d}/LICENSE-GPL-2.0-or-later.md", "chosen": False},
+                {"path": f"{d}/LICENSE-MIT.md", "chosen": True},
+                {"path": f"{d}/LICENSE.md", "chosen": True},
+            ],
+        )
+        for path in top:
+            (self.stage / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.stage / path).write_text(path)
+        self.assertEqual(licenses.check_image_licenses("aarch64", listed, top, self.stage, {tl}), [])
+        statement_off = [*listed[:3], {**listed[3], "chosen": False}]
+        self.assertEqual(
+            licenses.check_image_licenses("aarch64", statement_off, top, self.stage, {tl}),
+            [f"aarch64: {d}/LICENSE.md is not one licence of a choice, so it must be chosen"],
+        )
+        self.assertEqual(
+            licenses.missing_texts({tl, "Gone/sub"}, top), ["Gone/sub is in the image, but the release has no licence file of it"]
+        )
+
+    def _build(self) -> Path:
+        """A stand-in build directory: modules, their libraries, objects' .deps."""
+        b = self.root / "ws" / "Build" / "Fixture" / "DEBUG_GCC" / "X64"
+        libs = {
+            "FooLib": ("PartPkg/Library/FooLib", [self.src / FOO / "src/a.c", self.src / "PartPkg/Library/FooLib/FooLib.c"]),
+            "BarLib": ("PartPkg/Library/BarLib", [self.overlay / BAR / "b.c"]),
+            "BaseFdtLib": ("MdePkg/Library/BaseFdtLib", [self.src / FDT / "libfdt/fdt.c"]),
+            "UnusedLib": ("PartPkg/Library/UnusedLib", [self.src / UNUSED / "u.c"]),
+        }
+
+        def objects(out: Path, sources: list[Path]) -> None:
+            out.mkdir(parents=True, exist_ok=True)
+            for i, source in enumerate(sources):
+                (out / f"o{i}.obj.deps").write_text(f"{out}/o{i}.obj:  {source} \\\n {self.src}/MdePkg/Include/Base.h \\\n")
+
+        for name, (d, sources) in libs.items():
+            objects(b / d / name / "OUTPUT", sources)
+        modules = {"Pei": ["BaseFdtLib"], "Dxe": ["FooLib", "BarLib"], "Other": ["UnusedLib"]}
+        for name, linked in modules.items():
+            mdir = b / "AppPkg" / name / name
+            objects(mdir / "OUTPUT", [self.src / "AppPkg" / name / f"{name}.c"])
+            (mdir / "GNUmakefile").write_text(f"MODULE_NAME = {name}\nMODULE_FILE = {name}.inf\n")
+            lst = [f"{mdir}/OUTPUT/{name}.lib"] + [f"{b / libs[x][0] / x}/OUTPUT/{x}.lib" for x in linked]
+            (mdir / "OUTPUT" / "static_library_files.lst").write_text("\n".join(lst) + "\n")
+        return b
+
+    def test_compiled_parts(self) -> None:
+        b = self._build()
+        r = licenses.parse_report(self.report_text)
+        self.assertEqual(licenses.compiled_parts(r, "FIXTURE_CODE", b, self.roots, self.subs), ({FOO, BAR, FDT}, []))
+        self.assertEqual(licenses.compiled_parts(r, "FIXTURE_OTHER", b, self.roots, self.subs), ({UNUSED}, []))
+        # A FILE_GUID twin of Pei's build directory, linking another library.
+        twin = b / "AppPkg" / "Pei" / "44444444-4444-4444-4444-444444444444"
+        shutil.copytree(b / "AppPkg" / "Pei" / "Pei", twin)
+        (twin / "OUTPUT" / "static_library_files.lst").write_text(
+            f"{b}/PartPkg/Library/UnusedLib/UnusedLib/OUTPUT/UnusedLib.lib\n"
+        )
+        self.assertEqual(
+            licenses.compiled_parts(r, "FIXTURE_CODE", b, self.roots, self.subs), ({FOO, BAR, FDT, UNUSED}, [])
+        )
+        (twin / "OUTPUT" / "static_library_files.lst").unlink()
+        (twin / "OUTPUT" / "o0.obj").write_bytes(b"")
+        (b / "PartPkg/Library/FooLib/FooLib/OUTPUT/o0.obj").write_bytes(b"")
+        (b / "PartPkg/Library/BarLib/BarLib/OUTPUT/o9.obj").write_bytes(b"")
+        self.assertEqual(
+            licenses.compiled_parts(r, "FIXTURE_CODE", b, self.roots, self.subs),
+            (
+                {FOO, BAR, FDT},
+                [
+                    f"Pei: {twin}/OUTPUT/static_library_files.lst missing, so its libraries are unknown",
+                    f"{b}/PartPkg/Library/BarLib/BarLib/OUTPUT/o9.obj: no .deps, so its source is unknown",
+                ],
+            ),
+        )
+        shutil.rmtree(twin)
+        shutil.rmtree(b / "AppPkg" / "Pei")
+        (b / "PartPkg/Library/BarLib/BarLib/OUTPUT/o9.obj").unlink()
+        self.assertEqual(
+            licenses.compiled_parts(r, "FIXTURE_CODE", b, self.roots, self.subs),
+            ({FOO, BAR}, [f"Pei: no build directory for AppPkg/Pei/Pei.inf in {b}"]),
+        )
+
+    def test_derivation_sabotaged(self) -> None:
+        # The derivation (report and [Sources]) missing a part is caught by
+        # the objects' route: one INF's mapping into its submodule dropped.
+        b = self._build()
+        r = licenses.parse_report(self.report_text)
+        real = licenses.inf_sources
+
+        def dropped(inf: Path, arch: str) -> list[str]:
+            return [x for x in real(inf, arch) if not x.startswith("foo/")]
+
+        compiled, _ = licenses.compiled_parts(r, "FIXTURE_CODE", b, self.roots, self.subs)
+        with mock.patch.object(licenses, "inf_sources", dropped):
+            parts, _ = licenses.image_parts(r, "FIXTURE_CODE", self.roots, self.subs, "X64")
+        listed = licenses.image_licenses(parts, FIXTURE_TOP)
+        self.assertEqual(
+            self._check(listed, compiled),
+            ["x64: LICENSES/PartPkg_Library_FooLib_foo/LICENSE is not listed, but its part is compiled into the image"],
+        )
+
+
 Manifest = dict[str, object]
 
 
@@ -467,6 +861,7 @@ def _fake_tree(
             "vars": release.file_entry(top, f"{img.dir}/vars.fd"),
             "shell": release.file_entry(top, f"{img.dir}/{img.shell}"),
             "measured": {},
+            "licenses": [{"path": "LICENSES/edk2-License.txt", "chosen": True}],
         }
         (top / "descriptors" / img.descriptor(rel)).write_text(
             json.dumps(release.descriptor(img, rel, tag, commit, ""))
@@ -481,12 +876,15 @@ def _fake_tree(
         bad = json.loads(d.read_text())
         bad["mapping"]["executable"]["filename"] = "../../etc/passwd"
         d.write_text(json.dumps(bad))
+    (top / "LICENSES").mkdir()
+    (top / "LICENSES" / "edk2-License.txt").write_text("edk2 licence")
     manifest: Manifest = {
         "format": fmt,
         "release": rel,
         "edk2": {"tag": tag, "commit": commit},
         "images": images,
         "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in release.IMAGES],
+        "licenses": ["LICENSES/edk2-License.txt"],
     }
     if tamper:
         tamper(manifest)
@@ -912,12 +1310,33 @@ class ReleaseCheckTests(unittest.TestCase):
         def no_code(m: Manifest) -> None:
             del cast("dict[str, dict[str, object]]", m["images"])["aarch64"]["code"]
 
+        def no_licences(m: Manifest) -> None:
+            del cast("dict[str, dict[str, object]]", m["images"])["release/x64"]["licenses"]
+
+        def no_edk2_licence(m: Manifest) -> None:
+            cast("dict[str, dict[str, object]]", m["images"])["x64"]["licenses"] = []
+
+        def not_in_top(m: Manifest) -> None:
+            m["licenses"] = ["LICENSES/other.txt"]
+
         want = sorted(img.dir for img in release.IMAGES)
         cases: dict[str, tuple[Callable[[Manifest], None], str]] = {
             "moved": (moved, "FAIL: x64: the manifest's code is 'release/x64/code.fd', not 'x64/code.fd'\n"),
             "empty": (empty, f"FAIL: manifest images [], not {want}\n"),
             "no edk2": (no_edk2, "FAIL: {m}: no edk2.tag\n"),
             "no code": (no_code, "FAIL: aarch64: the manifest's code is None, not 'aarch64/code.fd'\n"),
+            "no licences": (no_licences, "FAIL: release/x64: licenses is None, not a list\n"),
+            "no edk2 licence": (
+                no_edk2_licence,
+                "FAIL: x64: edk2's licence LICENSES/edk2-License.txt is not listed, chosen\n",
+            ),
+            "not in top": (
+                not_in_top,
+                "".join(
+                    f"FAIL: {img.dir}: LICENSES/edk2-License.txt is not among the top-level licenses\n"
+                    for img in release.IMAGES
+                ),
+            ),
         }
         for label, (tamper, text) in cases.items():
             with self.subTest(label):
