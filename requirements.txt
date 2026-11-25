@@ -1,0 +1,7 @@
+# The firmware-volume parser the checks use (lib/axlfw/fv.py), pinned by
+# digest: pip install --require-hashes -r requirements.txt. build.sh puts it
+# in a venv of its own; the install command needs none of it.
+uefi_firmware==1.17 \
+    --hash=sha256:1ea1e73b84abdd521ce0b6076e7c30684225fb3dc5e0ebf3fd8a655a1f32b4fc \
+    --hash=sha256:58b158b3cf67b377500e4f7b254380934c128c8dc5048d68288220e018e3a2a5 \
+    --hash=sha256:c548e291aeec7332db89f90994c445975947b89374a83393faafd5b0c9152776

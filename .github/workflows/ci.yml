@@ -1,0 +1,124 @@
+# CI: the checks on every push and pull request, and the release on a tag.
+#
+# - lint: shellcheck, pyright (strict), and the tests that need no build
+#   (tests/firmware-tests.sh);
+# - build: both arches in both flavours, every property checked (static
+#   and booted under QEMU: X64 under KVM where the runner has it, AARCH64
+#   under TCG), packed, and kept as an artifact;
+# - release, on a tag edk2-stable*-r*: the build's assets and SHA256SUMS
+#   published as that tag's GitHub release.
+#
+# Actions are pinned to full commit SHAs (the tag each was resolved from is
+# in its comment).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["edk2-stable*-r*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  EDK2_TAG: edk2-stable202602
+  EDK2_COMMIT: b7a715f7c03c45c6b4575bf88596bfd79658b8ce
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install the tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck python3-venv
+      - name: shellcheck
+        run: shellcheck build.sh tests/firmware-tests.sh
+      - name: pyright (strict)
+        run: npx --yes pyright@1.1.408
+      - name: The tests that need no build
+        run: tests/firmware-tests.sh
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install the build and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential uuid-dev nasm \
+            acpica-tools gcc-aarch64-linux-gnu python3-venv xz-utils git \
+            qemu-system-x86 qemu-system-arm
+      - name: KVM for the X64 boots, where the runner has it
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no /dev/kvm: X64 boots under TCG"
+      - name: The edk2 source, cached by its pinned commit
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/axl-firmware/edk2/${{ env.EDK2_TAG }}
+          key: edk2-${{ env.EDK2_TAG }}-${{ env.EDK2_COMMIT }}
+      - name: The release build.sh makes
+        run: |
+          rel=$(sed -n 's/^tag="\(.*\)"$/\1/p' build.sh)-r$(sed -n 's/^revision=//p' build.sh)
+          echo "RELEASE=$rel" >>"$GITHUB_ENV"
+      - name: Build, check and pack
+        run: JOBS=4 AXLFW_BOOT_JOBS=2 ./build.sh build
+      - name: The no-build tests, with the source and the build's install
+        run: |
+          ./build.sh install --from "dist/axl-firmware-$RELEASE.tar.xz"
+          tests/firmware-tests.sh
+      - name: Re-check the packed release, as a consumer unpacks it
+        run: |
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          tar -C "$RUNNER_TEMP/unpacked" -xf "dist/axl-firmware-$RELEASE.tar.xz"
+          ./build.sh check "$RUNNER_TEMP/unpacked/axl-firmware-$RELEASE"
+      - name: Keep the release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+      - name: Keep the boot transcripts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: boot-logs
+          path: |
+            work/stage/boot-logs/
+            work/ws/build-*.log
+            check-logs/
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/edk2-stable')
+    needs: [lint, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: dist
+      - name: The tag must be the release build.sh made
+        run: |
+          want=$(sed -n 's/^tag="\(.*\)"$/\1/p' build.sh)-r$(sed -n 's/^revision=//p' build.sh)
+          [ "$GITHUB_REF_NAME" = "$want" ] || { echo "tag $GITHUB_REF_NAME, build.sh says $want"; exit 1; }
+          cd dist && sha256sum -c SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(awk -v r="## $GITHUB_REF_NAME" '$0 == r {p=1; next} /^## / {p=0} p' CHANGELOG.md)
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes" \
+            dist/axl-firmware-*.tar.xz dist/SHA256SUMS

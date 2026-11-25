@@ -1,30 +1,32 @@
 #!/usr/bin/env bash
-# The checks of guest/build-firmware.sh (DESIGN.md §11 item 101) that need
-# no build:
-#   - its `--verify` mode against a fake fwtool (every driver there, and
-#     each GUID asked for exactly once; two missing, named; fwtool failing
-#     or naming no node; no fwtool; no image; bad arguments);
-#   - its `--check-source` mode against a copy of the edk2 cache: the copy
-#     as fetched passes; a tracked file changed, a file hidden from git
-#     status (skip-worktree), a submodule not checked out, the tag moved,
-#     and a directory that is no checkout each fail, said;
-#   - real images, when axl-sdk's fwtool is here: the distro's OVMF
-#     (Fedora/EL path), which lacks VirtioFsDxe and VirtioGpuDxe (the
-#     control: it must fail naming exactly those two), and the images the
-#     script installed, which must pass.
-# A check whose fwtool, cache or image is absent says SKIP and why, and the
-# run ends saying how many were skipped; AXLVMPOOL_REQUIRE_FIRMWARE=1 makes
-# a SKIP a failure.
-#
-#   tools/firmware-tests.sh       FWTOOL=<path> for the real checks
+# The checks of build.sh that need no build and no QEMU:
+#   - the unit tests of lib/axlfw (tests/test_axlfw.py): the FV walker on
+#     stand-in images, the Shell's PE checks, the AutoGen facts, the
+#     descriptors exactly, the Shell output parsers, and the install from
+#     local tarballs (digests, a corrupt set, an escaping member, upgrades);
+#   - build.sh's own arguments and `verify` errors, exactly;
+#   - `check-source` against a copy of an edk2 source at the pinned tag (by
+#     default build.sh's cache; AXL_FIRMWARE_EDK2=<dir> for another): the
+#     copy as it is passes, and a tracked file changed, an untracked file,
+#     a file hidden from git status (in the tree and in a submodule), a
+#     submodule not checked out, the tag moved, and a directory that is no
+#     checkout each fail, said; an ignored file (a build's output) passes;
+#   - each checked GUID against its INF in that source (`source-guids`);
+#   - real images: the distribution's OVMF (Fedora/EL paths) as controls,
+#     which must fail exactly (no VirtioFsDxe, no pointer drivers; the
+#     Secure Boot image holding SecureBootConfigDxe), and an installed
+#     release's images, which must pass.
+# A check whose input is absent says SKIP and why; the run ends saying how
+# many were skipped. AXL_FIRMWARE_REQUIRE=1 makes a SKIP a failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-script=$PWD/guest/build-firmware.sh
+here=$PWD
+script=$here/build.sh
 tag=edk2-stable202602
 commit=b7a715f7c03c45c6b4575bf88596bfd79658b8ce
 tmp=$(mktemp -d)
 copy=""
-trap 'rm -rf "$tmp"; [[ -z "$copy" ]] || rm -rf "$copy"' EXIT
+trap 'rm -rf "$tmp"; [[ -z "$copy" ]] || { chmod -R u+w "$copy"; rm -rf "$copy"; }' EXIT
 failed=0
 skipped=0
 fail() {
@@ -51,189 +53,138 @@ expect() {
     [[ $was == 0 ]] || failed=1
 }
 
-# A fake fwtool, saying what axl-sdk's does: `find <image> <guid>` prints a
-# node and exits 0, or, when <guid> is in FAKE_MISSING, says it is not found
-# and exits 1. FAKE_FAIL fails as for a file with no firmware volume (exit 1
-# too); FAKE_SILENT exits 0 printing nothing. Each GUID asked for is
-# appended to FAKE_ASKED.
-cat >"$tmp/fwtool" <<'EOF'
-#!/usr/bin/env bash
-[[ $1 == find && $# == 3 ]] || { echo "fake fwtool: bad call: $*" >&2; exit 64; }
-[[ -z "${FAKE_ASKED:-}" ]] || echo "$3" >>"$FAKE_ASKED"
-[[ -z "${FAKE_FAIL:-}" ]] || { echo "fwtool: '$2': no firmware volumes found" >&2; exit 1; }
-[[ -z "${FAKE_SILENT:-}" ]] || exit 0
-if [[ " ${FAKE_MISSING:-} " == *" $3 "* ]]; then
-    echo "fwtool: GUID ${3,,} not found in '$2'" >&2
-    exit 1
-fi
-echo "IMAGE[0x0]/VOLUME[0x0]/FILE[${3,,}] off=0x0 size=1"
-EOF
-chmod +x "$tmp/fwtool"
-: >"$tmp/image.fd"
-img=$tmp/image.fd
-fs=7BD9DDF7-8B83-488E-AEC9-24C78610289C
-gpu=D6099B94-CD97-4CC5-8714-7F6312701A8A
-
-expect "every driver there" 0 "x64: $img holds every driver checked (11)" "" -- \
-    env FWTOOL="$tmp/fwtool" FAKE_ASKED="$tmp/asked" "$script" --verify x64 "$img"
-# The FILE_GUIDs of the drivers' INFs at the pinned tag, each asked once.
-expect "the GUIDs asked for" 0 "$fs
-$gpu
-58E26F0D-CBAC-4BBA-B70F-18221415665A
-A92CDB4B-82F1-4E0B-A516-8A655D371524
-11D92DFB-3CA9-4F93-BA2E-4780ED3E03B5
-FAB5D4F4-83C0-4AAF-8480-442D11DF6CEA
-23CACE14-EBA4-49F6-9681-C697FF0B649E
-5BEDB5CC-D830-4EB2-8742-2D4CC9B54F2C
-2366C20F-E15A-11E3-8BF1-E4115B28BC50
-3ACEB0C0-3C72-11E4-9A56-74D435052646
-86CDDF93-4872-4597-8AF9-A35AE4D3725F" "" -- cat "$tmp/asked"
-expect "two drivers missing, both named" 1 "" \
-    "build-firmware.sh: aarch64: $img lacks: VirtioFsDxe ($fs) VirtioGpuDxe ($gpu)" -- \
-    env FWTOOL="$tmp/fwtool" FAKE_MISSING="$fs $gpu" "$script" --verify aarch64 "$img"
-expect "fwtool failing" 1 "" \
-    "build-firmware.sh: x64: fwtool failed on $img: fwtool: '$img': no firmware volumes found" -- \
-    env FWTOOL="$tmp/fwtool" FAKE_FAIL=1 "$script" --verify x64 "$img"
-expect "fwtool naming no node" 1 "" \
-    "build-firmware.sh: x64: fwtool found $fs in $img but named no node" -- \
-    env FWTOOL="$tmp/fwtool" FAKE_SILENT=1 "$script" --verify x64 "$img"
-expect "no fwtool" 1 "" \
-    "build-firmware.sh: fwtool not found: set FWTOOL=<path> (axl-sdk builds it as fwtool-host)" -- \
-    env FWTOOL="$tmp/none" "$script" --verify x64 "$img"
-expect "no image" 1 "" "build-firmware.sh: x64: no image at $tmp/none.fd" -- \
-    env FWTOOL="$tmp/fwtool" "$script" --verify x64 "$tmp/none.fd"
-expect "an unknown arch" 1 "" "build-firmware.sh: --verify: arch is x64 or aarch64, not 'X64'" -- \
-    env FWTOOL="$tmp/fwtool" "$script" --verify X64 "$img"
-usage="usage: build-firmware.sh [--install] | --verify <x64|aarch64> <code-image> | --check-source <dir>"
-expect "an unknown option" 2 "" "$usage" -- "$script" --instal
-expect "too many arguments" 2 "" "$usage" -- "$script" --install x
-
-# The source check, on a copy of the cache (cloned by reflink where the
-# filesystem can, beside the cache so that it can).
-expect "no checkout" 1 "" "build-firmware.sh: $tmp: not a git checkout" -- \
-    "$script" --check-source "$tmp"
 cache=${XDG_CACHE_HOME:-}
 [[ "$cache" == /* ]] || cache="$HOME/.cache"
-cache="$cache/axlvmpool/edk2"
-if [[ ! -d "$cache/$tag/.git" ]]; then
-    skip "the source check: no edk2 cache at $cache/$tag (guest/build-firmware.sh fetches it)"
+# The venv build.sh uses, named by requirements.txt's digest (it makes it
+# on first use).
+"$script" verify x64 "$here/tests/fixtures/volumes/both.fd" >/dev/null 2>&1 || true
+py=$cache/axl-firmware/venv-$(sha256sum requirements.txt | cut -c1-16)/bin/python
+[[ -x "$py" ]] || {
+    echo "tests/firmware-tests.sh: no venv from build.sh" >&2
+    exit 1
+}
+if "$py" -E -s -m unittest discover -s tests -p 'test_*.py' >"$tmp/unit" 2>&1; then
+    echo "ok: unit tests ($(grep -o 'Ran [0-9]* tests' "$tmp/unit"))"
 else
-    copy=$(mktemp -d "$cache/.test.XXXXXX")
+    cat "$tmp/unit" >&2
+    fail "unit tests"
+fi
+
+usage="usage: build.sh build [--edk2 DIR] [--install] [--prefix DIR]
+       build.sh install --from <tarball|release-tag> [--prefix DIR] [--sha256 HEX] [--symbols]
+       build.sh check <release-dir>
+       build.sh verify <x64|aarch64> <code-image>
+       build.sh check-source <dir>"
+expect "no command" 2 "" "$usage" -- "$script"
+expect "an unknown command" 2 "" "$usage" -- "$script" make
+expect "an unknown build option" 2 "" "$usage" -- "$script" build --instal
+expect "verify, too many arguments" 2 "" "$usage" -- "$script" verify x64 a b
+expect "verify, an unknown arch" 1 "" "build.sh: verify: arch is x64 or aarch64, not 'X64'" -- \
+    "$script" verify X64 "$tmp/none.fd"
+expect "verify, no image" 1 "" "build.sh: x64: no image at $tmp/none.fd" -- \
+    "$script" verify x64 "$tmp/none.fd"
+nv=$here/tests/fixtures/volumes/not-a-volume.fd
+expect "verify, not a volume" 1 "" "build.sh: x64: $nv: no firmware volume found" -- \
+    "$script" verify x64 "$nv"
+expect "check-source, no checkout" 1 "" "build.sh: $tmp: not a git checkout" -- \
+    "$script" check-source "$tmp"
+
+# The source checks, on a copy (the cache is read-only).
+src=${AXL_FIRMWARE_EDK2:-$cache/axl-firmware/edk2/$tag}
+if [[ ! -e "$src/.git" ]]; then
+    skip "the source checks: no edk2 source at $src (build.sh build fetches it; or AXL_FIRMWARE_EDK2=<dir>)"
+else
+    expect "each GUID is its INF's" 0 "$src: every checked GUID is its INF's (or DEC's)" "" -- \
+        "$py" -E -s "$here/lib/axlfw-run.py" source-guids "$src"
+    copy=$(mktemp -d "$tmp.src.XXXXXX")
     c=$copy/edk2
-    # Under the build's lock, so that no build is changing the tree; its
-    # build output left out.
     mkdir "$c"
-    (
-        if ! flock -n 9; then
-            echo "tools/firmware-tests.sh: a build holds $cache/.$tag.lock; waiting" >&2
-            flock 9
-        fi
-        tar -C "$cache/$tag" --exclude=./Build -cf - . | tar -C "$c" -xf -
-    ) 9>"$cache/.$tag.lock"
-    expect "the cache as fetched" 0 "$c: $tag at $commit, as committed" "" -- \
-        "$script" --check-source "$c"
+    tar -C "$src" --exclude=./Build -cf - . | tar -C "$c" -xf -
+    chmod -R u+w "$c"
+    expect "the source as it is" 0 "$c: $tag at $commit, as committed" "" -- "$script" check-source "$c"
     echo changed >>"$c/License.txt"
-    expect "a tracked file changed" 1 "" "build-firmware.sh: $c: tracked files changed:
- M License.txt" -- "$script" --check-source "$c"
+    expect "a tracked file changed" 1 "" "build.sh: $c: files changed or untracked:
+ M License.txt" -- "$script" check-source "$c"
     git -C "$c" checkout --quiet -- License.txt
+    echo new >"$c/OvmfPkg/stray.inc"
+    expect "an untracked file" 1 "" "build.sh: $c: files changed or untracked:
+?? OvmfPkg/stray.inc" -- "$script" check-source "$c"
+    rm "$c/OvmfPkg/stray.inc"
+    mkdir -p "$c/Build/x"
+    echo output >"$c/Build/x/out.efi"
+    expect "an ignored build output" 0 "$c: $tag at $commit, as committed" "" -- "$script" check-source "$c"
+    rm -rf "$c/Build"
     git -C "$c" update-index --skip-worktree License.txt
-    expect "a file hidden from git status" 1 "" "build-firmware.sh: $c: files hidden from git status:
-S License.txt" -- "$script" --check-source "$c"
+    expect "a file hidden from git status" 1 "" "build.sh: $c: files hidden from git status:
+S License.txt" -- "$script" check-source "$c"
     git -C "$c" update-index --no-skip-worktree License.txt
     fdt=$c/MdePkg/Library/BaseFdtLib/libfdt
     git -C "$fdt" update-index --skip-worktree README
     expect "a submodule's file hidden from git status" 1 "" \
-        "build-firmware.sh: $c: files hidden from git status:
-MdePkg/Library/BaseFdtLib/libfdt: S README" -- "$script" --check-source "$c"
+        "build.sh: $c: files hidden from git status:
+MdePkg/Library/BaseFdtLib/libfdt: S README" -- "$script" check-source "$c"
     git -C "$fdt" update-index --no-skip-worktree README
     git -C "$c" submodule --quiet deinit -f MdePkg/Library/BaseFdtLib/libfdt
     sub=$(git -C "$c" ls-tree HEAD MdePkg/Library/BaseFdtLib/libfdt | awk '{ print $3 }')
     expect "a submodule not checked out" 1 "" \
-        "build-firmware.sh: $c: submodules not at their recorded commits:
--$sub MdePkg/Library/BaseFdtLib/libfdt" -- "$script" --check-source "$c"
+        "build.sh: $c: submodules not at their recorded commits:
+-$sub MdePkg/Library/BaseFdtLib/libfdt" -- "$script" check-source "$c"
     git -C "$c" submodule --quiet update --init MdePkg/Library/BaseFdtLib/libfdt
     parent=$(git -C "$c" rev-parse HEAD~1)
     git -C "$c" tag -f "$tag" "$parent" >/dev/null
-    expect "the tag moved" 1 "" "build-firmware.sh: $c: HEAD $commit, $tag $parent; pinned $commit" -- \
-        "$script" --check-source "$c"
+    expect "the tag moved" 1 "" "build.sh: $c: HEAD $commit, $tag $parent; pinned $commit" -- \
+        "$script" check-source "$c"
     git -C "$c" tag -f "$tag" "$commit" >/dev/null
-    expect "the copy put back" 0 "$c: $tag at $commit, as committed" "" -- \
-        "$script" --check-source "$c"
+    expect "the copy put back" 0 "$c: $tag at $commit, as committed" "" -- "$script" check-source "$c"
 fi
 
-# Real images, with the real fwtool; the install the script made.
+# Real images. The distribution's are controls, judged only at the digest
+# their expected text was taken from.
+fs="VirtioFsDxe (7BD9DDF7-8B83-488E-AEC9-24C78610289C)"
+gpu="VirtioGpuDxe (D6099B94-CD97-4CC5-8714-7F6312701A8A)"
+mice="UsbMouseDxe (2D2E62AA-9ECF-43B7-8219-94E7FC713DFE), UsbMouseAbsolutePointerDxe (4EA43463-747C-46EB-97FB-B0E5C5F05306)"
+ps2="Ps2MouseDxe (08464531-4C99-4C4C-A887-8D8BA4BBB063)"
+control() {
+    local name=$1 image=$2 digest=$3 want=$4
+    if [[ ! -f "$image" ]]; then
+        skip "$name: no $image"
+    elif [[ "$(sha256sum <"$image" | cut -d' ' -f1)" != "$digest" ]]; then
+        skip "$name: $image is not the build the expected text was taken from ($digest)"
+    else
+        expect "$name" 1 "" "$want" -- "$script" verify x64 "$image"
+    fi
+}
+d=/usr/share/edk2/ovmf
+control "the distribution's OVMF lacks VirtioFsDxe and the pointer drivers" "$d/OVMF_CODE.fd" \
+    fab13b2abe7dcea71a6809f3368e02d2b18f76773bade14a98f98342507e84b6 \
+    "build.sh: x64: $d/OVMF_CODE.fd lacks: $fs, $gpu, $mice, $ps2"
+control "the distribution's Secure Boot OVMF holds SecureBootConfigDxe" "$d/OVMF_CODE.secboot.fd" \
+    e6a787293c6f193eaff7feeb1f929871d1b27dd72f64ce66d9326bfa0604b249 \
+    "build.sh: x64: $d/OVMF_CODE.secboot.fd lacks: $fs, $gpu, $mice, Shell (7C04A583-9E3E-4F1C-AD65-E05268D0B4D1), $ps2
+build.sh: x64: $d/OVMF_CODE.secboot.fd holds: SecureBootConfigDxe (F0E6A44F-7195-41C3-AC64-54F202CD0A21)"
+
 data=${XDG_DATA_HOME:-}
 [[ "$data" == /* ]] || data="$HOME/.local/share"
-installed=$data/axlvmpool/firmware/$tag
-real=${FWTOOL:-$(command -v fwtool || true)}
-if [[ -z "$real" ]]; then
-    skip "real images: no fwtool (set FWTOOL=<path>)"
+installed=$(find "$data/axl-firmware" -mindepth 1 -maxdepth 1 -name "$tag-r*" 2>/dev/null | LC_ALL=C sort -V | tail -1 || true)
+if [[ -n "$installed" && -f "$installed/manifest.json" ]]; then
+    for dir in x64 aarch64 release/x64 release/aarch64; do
+        arch=${dir#release/}
+        n=$("$py" -E -s -c 'import sys; sys.path.insert(0, sys.argv[1]); from axlfw import checks; print(len(checks.drivers(sys.argv[2])))' "$here/lib" "$arch")
+        expect "the installed $dir image" 0 \
+            "$arch: $installed/$dir/code.fd holds every driver checked ($n) and none of 1 absent" "" -- \
+            "$script" verify "$arch" "$installed/$dir/code.fd"
+    done
 else
-    distro=/usr/share/edk2/ovmf/OVMF_CODE.fd
-    if [[ -f $distro ]]; then
-        expect "the distro's OVMF lacks VirtioFsDxe and VirtioGpuDxe" 1 "" \
-            "build-firmware.sh: x64: $distro lacks: VirtioFsDxe ($fs) VirtioGpuDxe ($gpu)" -- \
-            env FWTOOL="$real" "$script" --verify x64 "$distro"
-    else
-        skip "the distro control: no $distro"
-    fi
-    if [[ -f $installed/manifest.json ]]; then
-        for arch in x64 aarch64; do
-            expect "the installed $arch image" 0 \
-                "$arch: $installed/$arch/code.fd holds every driver checked (11)" "" -- \
-                env FWTOOL="$real" "$script" --verify "$arch" "$installed/$arch/code.fd"
-        done
-    else
-        skip "the installed images: none in $installed"
-    fi
+    skip "the installed images: none in $data/axl-firmware"
 fi
 
-# The installed descriptors: each parses, equals exactly what it should
-# say, names files that exist, and the manifest lists both.
-if [[ -f $installed/manifest.json ]]; then
-    expect "the installed descriptors" 0 "" "" -- python3 -I - "$data/axlvmpool/firmware" "$tag" \
-        "$commit" <<'EOF'
-import json
-import pathlib
-import sys
-
-root, tag, commit = sys.argv[1:]
-d = f"{root}/descriptors"
-manifest = json.loads(pathlib.Path(f"{root}/{tag}/manifest.json").read_text())
-names = {"x64": ("x86_64", ["pc-q35-*"], ["acpi-s3", "amd-sev", "amd-sev-es", "verbose-dynamic"],
-                 "X64 (q35)"),
-         "aarch64": ("aarch64", ["virt-*"], ["verbose-static"], "AARCH64 (virt)")}
-paths = [f"{d}/10-axlvmpool-{tag}-{a}.json" for a in names]
-assert manifest["descriptors"] == paths, manifest["descriptors"]
-for (a, (qarch, machines, features, what)), path in zip(names.items(), paths):
-    got = json.loads(pathlib.Path(path).read_text())
-    want = {
-        "description": f"axlvmpool's own UEFI firmware for {what}, edk2 {tag}",
-        "interface-types": ["uefi"],
-        "mapping": {
-            "device": "flash",
-            "mode": "split",
-            "executable": {"filename": f"{root}/{tag}/{a}/code.fd", "format": "raw"},
-            "nvram-template": {"filename": f"{root}/{tag}/{a}/vars.fd", "format": "raw"},
-        },
-        "targets": [{"architecture": qarch, "machines": machines}],
-        "features": features,
-        "tags": [tag, commit],
-    }
-    assert got == want, f"{path}: {got}"
-    for f in ("executable", "nvram-template"):
-        assert pathlib.Path(got["mapping"][f]["filename"]).is_file(), got["mapping"][f]
-EOF
-else
-    skip "the installed descriptors: no install in $installed"
-fi
 [[ $failed == 0 ]] || exit 1
 if ((skipped > 0)); then
-    echo "tools/firmware-tests.sh: passed, $skipped skipped"
-    [[ "${AXLVMPOOL_REQUIRE_FIRMWARE:-}" != 1 ]] || {
-        echo "tools/firmware-tests.sh: AXLVMPOOL_REQUIRE_FIRMWARE=1: a SKIP fails" >&2
+    echo "tests/firmware-tests.sh: passed, $skipped skipped"
+    [[ "${AXL_FIRMWARE_REQUIRE:-}" != 1 ]] || {
+        echo "tests/firmware-tests.sh: AXL_FIRMWARE_REQUIRE=1: a SKIP fails" >&2
         exit 1
     }
 else
-    echo "tools/firmware-tests.sh: all passed"
+    echo "tests/firmware-tests.sh: all passed"
 fi

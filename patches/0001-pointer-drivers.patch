@@ -1,0 +1,70 @@
+Subject: [PATCH] OvmfPkg, ArmVirtPkg: add the pointer drivers
+
+Add UsbMouseDxe and UsbMouseAbsolutePointerDxe to both arches' images
+(OvmfPkg's shared USB components, which ArmVirtQemu includes, and both
+FDFs), and Ps2MouseDxe to OvmfPkgX64, so a guest has a pointer: a USB
+mouse or tablet, or a PS/2 mouse on q35.
+
+axl-firmware's patch against edk2-stable202602, applied to a copy of the
+packages it touches.
+
+---
+diff --git a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+index bb3efcb..37dc68e 100644
+--- a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
++++ b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+@@ -178,6 +178,8 @@ READ_LOCK_STATUS   = TRUE
+   INF MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+   INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+   INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
++  INF MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
++  INF MdeModulePkg/Bus/Usb/UsbMouseAbsolutePointerDxe/UsbMouseAbsolutePointerDxe.inf
+   INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
+ 
+   #
+diff --git a/OvmfPkg/Include/Dsc/UsbComponents.dsc.inc b/OvmfPkg/Include/Dsc/UsbComponents.dsc.inc
+index 69dd388..369e1e1 100644
+--- a/OvmfPkg/Include/Dsc/UsbComponents.dsc.inc
++++ b/OvmfPkg/Include/Dsc/UsbComponents.dsc.inc
+@@ -9,6 +9,8 @@
+   MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+   MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+   MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
++  MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
++  MdeModulePkg/Bus/Usb/UsbMouseAbsolutePointerDxe/UsbMouseAbsolutePointerDxe.inf
+   MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf {
+     <LibraryClasses>
+       UefiDriverEntryPoint|OvmfPkg/Library/UefiDriverEntryPointFwCfgOverrideLib/UefiDriverEntryPointFwCfgOverrideLib.inf
+diff --git a/OvmfPkg/OvmfPkgX64.dsc b/OvmfPkg/OvmfPkgX64.dsc
+index 94c639b..1e1551c 100644
+--- a/OvmfPkg/OvmfPkgX64.dsc
++++ b/OvmfPkg/OvmfPkgX64.dsc
+@@ -998,6 +998,7 @@
+   OvmfPkg/SioBusDxe/SioBusDxe.inf
+   MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+   MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KeyboardDxe.inf
++  MdeModulePkg/Bus/Isa/Ps2MouseDxe/Ps2MouseDxe.inf
+ 
+   #
+   # SMBIOS Support
+diff --git a/OvmfPkg/OvmfPkgX64.fdf b/OvmfPkg/OvmfPkgX64.fdf
+index e4f6995..268269f 100644
+--- a/OvmfPkg/OvmfPkgX64.fdf
++++ b/OvmfPkg/OvmfPkgX64.fdf
+@@ -257,6 +257,7 @@ INF  OvmfPkg/SioBusDxe/SioBusDxe.inf
+ INF  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+ !endif
+ INF  MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KeyboardDxe.inf
++INF  MdeModulePkg/Bus/Isa/Ps2MouseDxe/Ps2MouseDxe.inf
+ 
+ INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+ INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+@@ -304,6 +305,8 @@ INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
+ INF  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+ INF  MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+ INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
++INF  MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
++INF  MdeModulePkg/Bus/Usb/UsbMouseAbsolutePointerDxe/UsbMouseAbsolutePointerDxe.inf
+ INF  MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
+ 
+ INF  OvmfPkg/QemuVideoDxe/QemuVideoDxe.inf

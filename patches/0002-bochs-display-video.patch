@@ -1,0 +1,96 @@
+Subject: [PATCH] ArmVirtPkg, OvmfPkg: drive bochs-display on AARCH64
+
+Add QemuVideoDxe to ArmVirtQemu (DSC and FDF), so a virt machine's
+bochs-display (a PCI display controller with a linear framebuffer, and
+no legacy VGA) gets a GOP. Two changes make it work there:
+
+ - PcdRemapFrameBufferWriteCombine=TRUE: the framebuffer BAR otherwise
+   maps as Device memory, where unaligned pixel writes fault;
+ - QemuVideoDxe skips the legacy VGA I/O-port accesses (colour mode,
+   attribute flip-flop, DAC palette) for the MMIO bochs variant: those
+   ports do not exist on bochs-display, and on virt the accesses fault.
+   Other variants are unchanged, so X64's std-VGA path is as before.
+
+axl-firmware's patch against edk2-stable202602, applied after
+0001-pointer-drivers.patch to a copy of the packages it touches.
+
+---
+diff --git a/ArmVirtPkg/ArmVirtQemu.dsc b/ArmVirtPkg/ArmVirtQemu.dsc
+index a38a1d8..8d753ad 100644
+--- a/ArmVirtPkg/ArmVirtQemu.dsc
++++ b/ArmVirtPkg/ArmVirtQemu.dsc
+@@ -154,6 +154,10 @@
+   #  It could be set FALSE to save size.
+   gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|TRUE
+ 
++  ## The display's framebuffer BAR maps as Device memory on ARM, where
++  #  unaligned pixel writes fault: remap it write-combining.
++  gUefiOvmfPkgTokenSpaceGuid.PcdRemapFrameBufferWriteCombine|TRUE
++
+   gEfiMdeModulePkgTokenSpaceGuid.PcdTurnOffUsbLegacySupport|TRUE
+ 
+   gArmVirtTokenSpaceGuid.PcdTpm2SupportEnabled|$(TPM2_ENABLE)
+@@ -577,6 +581,7 @@
+   # Video support
+   #
+   OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
++  OvmfPkg/QemuVideoDxe/QemuVideoDxe.inf
+   OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
+   OvmfPkg/PlatformDxe/Platform.inf
+ 
+diff --git a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+index 37dc68e..7eb1884 100644
+--- a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
++++ b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+@@ -167,6 +167,7 @@ READ_LOCK_STATUS   = TRUE
+   # Video support
+   #
+   INF OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
++  INF OvmfPkg/QemuVideoDxe/QemuVideoDxe.inf
+   INF OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
+   INF OvmfPkg/PlatformDxe/Platform.inf
+ 
+diff --git a/OvmfPkg/QemuVideoDxe/Driver.c b/OvmfPkg/QemuVideoDxe/Driver.c
+index 6feca83..6ff1f1e 100644
+--- a/OvmfPkg/QemuVideoDxe/Driver.c
++++ b/OvmfPkg/QemuVideoDxe/Driver.c
+@@ -1017,12 +1017,19 @@ InitializeBochsGraphicsMode (
+     ModeData->ColorDepth
+     ));
+ 
+-  /* set color mode */
+-  VgaOutb (Private, MISC_OUTPUT_REGISTER, 0x01);
++  //
++  // The legacy VGA registers are PCI I/O ports, which the MMIO variant
++  // (bochs-display) does not decode; on a machine with no I/O space, such
++  // as AARCH64's virt, the accesses fault. The VBE path below needs none.
++  //
++  if (Private->Variant != QEMU_VIDEO_BOCHS_MMIO) {
++    /* set color mode */
++    VgaOutb (Private, MISC_OUTPUT_REGISTER, 0x01);
+ 
+-  /* reset flip flop + unblank */
+-  VgaInb (Private, INPUT_STATUS_1_REGISTER);
+-  VgaOutb (Private, ATT_ADDRESS_REGISTER, 0x20);
++    /* reset flip flop + unblank */
++    VgaInb (Private, INPUT_STATUS_1_REGISTER);
++    VgaOutb (Private, ATT_ADDRESS_REGISTER, 0x20);
++  }
+ 
+   BochsWrite (Private, VBE_DISPI_INDEX_ENABLE, 0);
+   BochsWrite (Private, VBE_DISPI_INDEX_BANK, 0);
+@@ -1041,7 +1048,13 @@ InitializeBochsGraphicsMode (
+     VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED
+     );
+ 
+-  SetDefaultPalette (Private);
++  //
++  // The DAC palette is set through the same VGA I/O ports.
++  //
++  if (Private->Variant != QEMU_VIDEO_BOCHS_MMIO) {
++    SetDefaultPalette (Private);
++  }
++
+   ClearScreen (Private);
+ }
+ 
