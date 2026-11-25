@@ -11,26 +11,33 @@ build with two UARTs never boots.
 
 Map every PL011 the device tree lists, each page as the console's is
 mapped (device memory, with the CCA protection bit). One UART, or the
-console alone, maps as before.
+console alone, maps as before. The table grows by two entries, as many
+ports as FdtSerialGetPorts returns (neither of them the console when
+"/chosen" names a third PL011), and the loop never writes past it.
 
 axl-firmware's patch against edk2-stable202611, applied after
 0002-bochs-display-video.patch to a copy of the packages it touches.
 
 ---
 diff --git a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
-index 5b963ec..7e6a5ec 100644
+index 5b963ec..bbc741e 100644
 --- a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
 +++ b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
-@@ -20,7 +20,7 @@
+@@ -19,8 +19,11 @@
+ #include <Library/FdtSerialPortAddressLib.h>
  #include <Library/FdtLib.h>
  
- // Number of Virtual Memory Map Descriptors
+-// Number of Virtual Memory Map Descriptors
 -#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (5)
-+#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (6)
++// Number of Virtual Memory Map Descriptors: DRAM, the FV, the console UART,
++// fw_cfg and the end of the table, plus up to two other PL011s (as many as
++// FdtSerialGetPorts returns; neither is the console when "/chosen" names
++// a third).
++#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (7)
  
  /** A macro to trace the memory map.
  **/
-@@ -199,6 +199,8 @@ ArmVirtGetMemoryMap (
+@@ -199,6 +202,8 @@ ArmVirtGetMemoryMap (
    UINT64                        MappingBase;
    UINT64                        MappingSize;
    UINT64                        UartBase;
@@ -39,17 +46,22 @@ index 5b963ec..7e6a5ec 100644
    UINT64                        FwCfgBase;
    UINT64                        FwCfgSize;
  
-@@ -282,6 +284,32 @@ ArmVirtGetMemoryMap (
+@@ -282,6 +287,37 @@ ArmVirtGetMemoryMap (
    LOG_MEM_MAP ("Serial Port");
    Idx++;
  
 +  //
 +  // Map the other PL011 too, if there is one: with two, DebugLibFdtPL011Uart
 +  // sends DEBUG output to the port that is not the console, and an unmapped
-+  // port faults on the first DEBUG write.
++  // port faults on the first DEBUG write. Never past the table: two entries
++  // stay for fw_cfg and the end.
 +  //
 +  if (!RETURN_ERROR (FdtSerialGetPorts (DeviceTreeBase, "arm,pl011", &Ports))) {
-+    for (PortIdx = 0; PortIdx < Ports.NumberOfPorts; PortIdx++) {
++    for (PortIdx = 0;
++         (PortIdx < Ports.NumberOfPorts) &&
++         (Idx < MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS - 2);
++         PortIdx++)
++    {
 +      MappingBase = Ports.BaseAddress[PortIdx] & ~(UINT64)EFI_PAGE_MASK;
 +      if (MappingBase == (UartBase & ~(UINT64)EFI_PAGE_MASK)) {
 +        continue;
