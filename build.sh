@@ -373,8 +373,13 @@ done
     export WORKSPACE="$ws" PACKAGES_PATH="$ws/overlay:$src" EDK_TOOLS_PATH="$ws/BaseTools"
     export CONF_PATH="$ws/Conf" PYTHON_COMMAND=python3 PYTHONHASHSEED=1
     export GCC5_AARCH64_PREFIX="$aa64_prefix" GCC_AARCH64_PREFIX="$aa64_prefix"
-    echo "+ make -C BaseTools (the workspace's copy)"
-    nice -n 19 make -C BaseTools -j "$jobs" >/dev/null
+    # BaseTools' C reads MdePkg's headers from EDK2_PATH (by default the
+    # copy's ../../..): the source's, read only.
+    echo "+ make -C BaseTools (the workspace's copy) EDK2_PATH=$src"
+    nice -n 19 make -C BaseTools -j "$jobs" EDK2_PATH="$src" >"$ws/build-BaseTools.log" 2>&1 || {
+        tail -40 "$ws/build-BaseTools.log" >&2
+        die "the BaseTools build failed (log: $ws/build-BaseTools.log)"
+    }
     # BuildEnv is not written for -e or -u; whether it worked is whether
     # `build` is on PATH after it.
     set +eu
