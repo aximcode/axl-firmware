@@ -19,6 +19,7 @@ first) is removed. Needs only Python's standard library (3.9 or later).
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ from typing import cast
 
 _TAG = re.compile(r"^edk2-stable\d{6}(?:\.\d+)?-r\d+$")
 _OURS = re.compile(r"^[12]0-axl-firmware-.*\.json$")
+FORMAT = 2
 
 
 class InstallError(Exception):
@@ -64,9 +66,13 @@ def _sums(path: Path) -> dict[str, str]:
 
 
 def _api(url: str, token: str, accept: str) -> urllib.request.Request:
-    return urllib.request.Request(  # noqa: S310 - https only, below
-        url, headers={"Authorization": f"Bearer {token}", "Accept": accept, "User-Agent": "axl-firmware-install"}
+    req = urllib.request.Request(  # noqa: S310 - https only, below
+        url, headers={"Accept": accept, "User-Agent": "axl-firmware-install"}
     )
+    # Unredirected: an asset redirects to a storage host, which must not
+    # receive the token.
+    req.add_unredirected_header("Authorization", f"Bearer {token}")
+    return req
 
 
 def download(repo: str, tag: str, names: list[str], dest: Path) -> None:
@@ -154,32 +160,79 @@ def _write(path: Path, text: str) -> None:
         raise
 
 
+def _inside(root: Path, rel: str) -> Path:
+    """root/rel, which must name something under root."""
+    p = (root / rel).resolve()
+    if rel.startswith("/") or root.resolve() not in p.parents:
+        msg = f"{root}: the manifest names {rel!r}, outside the release"
+        raise InstallError(msg)
+    return p
+
+
 def _check_set(root: Path, release: str) -> dict[str, object]:
     manifest = cast("dict[str, object]", json.loads((root / "manifest.json").read_text()))
+    if manifest.get("format") != FORMAT:
+        msg = f"{root}: manifest format {manifest.get('format')!r}; this install reads format {FORMAT}"
+        raise InstallError(msg)
     if manifest.get("release") != release:
         msg = f"{root}: its manifest names release {manifest.get('release')!r}, not {release!r}"
         raise InstallError(msg)
     for d, entry in cast("dict[str, dict[str, object]]", manifest["images"]).items():
         for key in ("code", "vars", "shell"):
             f = cast("dict[str, object]", entry[key])
-            p = root / str(f["path"])
+            p = _inside(root, str(f["path"]))
             if not p.is_file() or p.stat().st_size != f["size"] or _sha256(p) != f["sha256"]:
                 msg = f"{p}: not {d}'s {key} as its manifest records it"
                 raise InstallError(msg)
     return manifest
 
 
+def _descriptors(unpacked: Path, dest: Path, manifest: dict[str, object]) -> list[tuple[str, str]]:
+    """Each descriptor of the release, its paths made absolute under dest.
+
+    Checked against the unpacked release before anything is replaced.
+    """
+    out: list[tuple[str, str]] = []
+    for rel in cast("list[str]", manifest["descriptors"]):
+        name = Path(rel).name
+        if rel != f"descriptors/{name}" or not _OURS.match(name):
+            msg = f"{unpacked}: the manifest lists a descriptor {rel!r}, not descriptors/[12]0-axl-firmware-*.json"
+            raise InstallError(msg)
+        d = cast("dict[str, object]", json.loads((unpacked / rel).read_text()))
+        mapping = cast("dict[str, dict[str, str]]", d["mapping"])
+        for key in ("executable", "nvram-template"):
+            f = mapping[key]["filename"]
+            if not _inside(unpacked, f).is_file():
+                msg = f"{unpacked / rel}: names {f}, which is not in the release"
+                raise InstallError(msg)
+            mapping[key]["filename"] = str(dest / f)
+        out.append((name, json.dumps(d, indent=2) + "\n"))
+    return out
+
+
 def install(repo: str, source: str, prefix: Path | None, sha: str | None, symbols: bool) -> None:
-    """Install a release from a tarball path or a release tag."""
+    """Install a release from a tarball path or a release tag.
+
+    One install at a time per prefix (a lock on <prefix>/.lock). The
+    release and its descriptors are checked before anything is replaced; a
+    release directory already there is kept until the new descriptors are
+    written, and put back if writing them fails.
+    """
     prefix = (prefix or default_prefix()).resolve()
     prefix.mkdir(parents=True, exist_ok=True)
+    with (prefix / ".lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _install(repo, source, prefix, sha, symbols)
+
+
+def _install(repo: str, source: str, prefix: Path, sha: str | None, symbols: bool) -> None:
     with tempfile.TemporaryDirectory(dir=prefix, prefix=".install.") as tmpname:
         tmp = Path(tmpname)
         path = Path(source)
         if path.is_file():
             m = re.match(r"^axl-firmware-(.+)\.tar\.xz$", path.name)
-            if not m:
-                msg = f"{path}: not named axl-firmware-<release>.tar.xz"
+            if not m or not _TAG.match(m.group(1)):
+                msg = f"{path}: not named axl-firmware-<release>.tar.xz, with a release edk2-stableYYYYMM-rN"
                 raise InstallError(msg)
             release = m.group(1)
         elif _TAG.match(source):
@@ -208,25 +261,22 @@ def install(repo: str, source: str, prefix: Path | None, sha: str | None, symbol
                 (unpacked / "symbols").mkdir(exist_ok=True)
                 os.replace(part / arch, unpacked / "symbols" / arch)
         dest = prefix / release
-        # A release already there is moved aside (and removed with tmp).
+        prepared = _descriptors(unpacked, dest, manifest)
+        descriptors = prefix / "descriptors"
+        descriptors.mkdir(exist_ok=True)
+        old = tmp / "replaced"
         if dest.exists():
-            os.replace(dest, tmp / "replaced")
+            os.replace(dest, old)
         os.replace(unpacked, dest)
-    descriptors = prefix / "descriptors"
-    descriptors.mkdir(exist_ok=True)
-    written: list[str] = []
-    for rel in cast("list[str]", manifest["descriptors"]):
-        d = cast("dict[str, object]", json.loads((dest / rel).read_text()))
-        mapping = cast("dict[str, dict[str, str]]", d["mapping"])
-        for key in ("executable", "nvram-template"):
-            p = dest / mapping[key]["filename"]
-            if not p.is_file():
-                msg = f"{dest / rel}: names {p}, which is not there"
-                raise InstallError(msg)
-            mapping[key]["filename"] = str(p)
-        name = Path(rel).name
-        _write(descriptors / name, json.dumps(d, indent=2) + "\n")
-        written.append(name)
+        try:
+            for name, text in prepared:
+                _write(descriptors / name, text)
+        except BaseException:
+            os.replace(dest, tmp / "failed")
+            if old.exists():
+                os.replace(old, dest)
+            raise
+    written = [name for name, _ in prepared]
     for f in sorted(descriptors.iterdir()):
         if _OURS.match(f.name) and f.name not in written:
             print(f"removing another release's descriptor {f}")
@@ -234,4 +284,3 @@ def install(repo: str, source: str, prefix: Path | None, sha: str | None, symbol
     print(f"installed {release} in {dest}")
     for name in written:
         print(f"descriptor {descriptors / name}")
-

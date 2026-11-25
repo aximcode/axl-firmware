@@ -1,15 +1,19 @@
 Subject: [PATCH] ArmVirtPkg, OvmfPkg: drive bochs-display on AARCH64
 
 Add QemuVideoDxe to ArmVirtQemu (DSC and FDF), so a virt machine's
-bochs-display (a PCI display controller with a linear framebuffer, and
-no legacy VGA) gets a GOP. Two changes make it work there:
+bochs-display (a PCI display controller with a linear framebuffer and no
+VGA) gets a GOP. Two changes make it work there:
 
  - PcdRemapFrameBufferWriteCombine=TRUE: the framebuffer BAR otherwise
    maps as Device memory, where unaligned pixel writes fault;
- - QemuVideoDxe skips the legacy VGA I/O-port accesses (colour mode,
-   attribute flip-flop, DAC palette) for the MMIO bochs variant: those
-   ports do not exist on bochs-display, and on virt the accesses fault.
-   Other variants are unchanged, so X64's std-VGA path is as before.
+ - QemuVideoDxe skips the legacy VGA register accesses (colour mode,
+   attribute unblank, DAC palette) for a device of display subclass
+   "other" in the MMIO variant, on architectures other than x86. The
+   MMIO variant reaches those registers in BAR2 at 0x400, where
+   bochs-display has nothing: unassigned MMIO, which faults on virt.
+   The standard VGA (subclass VGA) keeps them, since QEMU blanks a VGA
+   display whose attribute controller was never unblanked; x86 builds
+   are unchanged.
 
 axl-firmware's patch against edk2-stable202602, applied after
 0001-pointer-drivers.patch to a copy of the packages it touches.
@@ -51,21 +55,77 @@ index 37dc68e..7eb1884 100644
    INF OvmfPkg/PlatformDxe/Platform.inf
  
 diff --git a/OvmfPkg/QemuVideoDxe/Driver.c b/OvmfPkg/QemuVideoDxe/Driver.c
-index 6feca83..6ff1f1e 100644
+index 6feca83..dfe37ee 100644
 --- a/OvmfPkg/QemuVideoDxe/Driver.c
 +++ b/OvmfPkg/QemuVideoDxe/Driver.c
-@@ -1017,12 +1017,19 @@ InitializeBochsGraphicsMode (
+@@ -1003,12 +1003,60 @@ VgaInb (
+   return Data;
+ }
+ 
++/**
++  Whether the device's legacy VGA registers may be accessed.
++
++  The MMIO variant reaches them in BAR2 at 0x400, where the standard VGA
++  has them. bochs-display (a display controller of subclass "other") has
++  no VGA, and that part of its BAR is unassigned. x86 reads unassigned
++  MMIO as all ones and ignores writes, so nothing changes there; on other
++  architectures, such as AARCH64's virt, the accesses fault.
++
++  secondary-vga has the same IDs and subclass, so on those architectures
++  it is treated the same way.
++
++  @param[in] Private  The device.
++
++  @retval TRUE   The VGA registers may be accessed.
++  @retval FALSE  They may not.
++**/
++STATIC
++BOOLEAN
++HasLegacyVgaRegisters (
++  IN QEMU_VIDEO_PRIVATE_DATA  *Private
++  )
++{
++ #if defined (MDE_CPU_IA32) || defined (MDE_CPU_X64)
++  return TRUE;
++ #else
++  EFI_STATUS  Status;
++  UINT8       SubClass;
++
++  if (Private->Variant != QEMU_VIDEO_BOCHS_MMIO) {
++    return TRUE;
++  }
++
++  Status = Private->PciIo->Pci.Read (
++                                 Private->PciIo,
++                                 EfiPciIoWidthUint8,
++                                 PCI_CLASSCODE_OFFSET + 1,
++                                 1,
++                                 &SubClass
++                                 );
++  return EFI_ERROR (Status) || (SubClass != PCI_CLASS_DISPLAY_OTHER);
++ #endif
++}
++
+ VOID
+ InitializeBochsGraphicsMode (
+   QEMU_VIDEO_PRIVATE_DATA  *Private,
+   QEMU_VIDEO_MODE_DATA     *ModeData
+   )
+ {
++  BOOLEAN  VgaRegisters;
++
++  VgaRegisters = HasLegacyVgaRegisters (Private);
++
+   DEBUG ((
+     DEBUG_INFO,
+     "InitializeBochsGraphicsMode: %dx%d @ %d\n",
+@@ -1017,12 +1065,14 @@ InitializeBochsGraphicsMode (
      ModeData->ColorDepth
      ));
  
 -  /* set color mode */
 -  VgaOutb (Private, MISC_OUTPUT_REGISTER, 0x01);
-+  //
-+  // The legacy VGA registers are PCI I/O ports, which the MMIO variant
-+  // (bochs-display) does not decode; on a machine with no I/O space, such
-+  // as AARCH64's virt, the accesses fault. The VBE path below needs none.
-+  //
-+  if (Private->Variant != QEMU_VIDEO_BOCHS_MMIO) {
++  if (VgaRegisters) {
 +    /* set color mode */
 +    VgaOutb (Private, MISC_OUTPUT_REGISTER, 0x01);
  
@@ -79,15 +139,12 @@ index 6feca83..6ff1f1e 100644
  
    BochsWrite (Private, VBE_DISPI_INDEX_ENABLE, 0);
    BochsWrite (Private, VBE_DISPI_INDEX_BANK, 0);
-@@ -1041,7 +1048,13 @@ InitializeBochsGraphicsMode (
+@@ -1041,7 +1091,10 @@ InitializeBochsGraphicsMode (
      VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED
      );
  
 -  SetDefaultPalette (Private);
-+  //
-+  // The DAC palette is set through the same VGA I/O ports.
-+  //
-+  if (Private->Variant != QEMU_VIDEO_BOCHS_MMIO) {
++  if (VgaRegisters) {
 +    SetDefaultPalette (Private);
 +  }
 +

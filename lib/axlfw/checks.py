@@ -181,8 +181,11 @@ def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object]
         return {}, [f"{dxe}: no AutoGen with the debug PCDs"]
     mask = int(pcds["PcdDebugPropertyMask"], 0)
     level = int(pcds["PcdDebugPrintErrorLevel"], 0)
-    makefile = dxe.parent / "Makefile"
-    ndebug = makefile.is_file() and "MDEPKG_NDEBUG" in makefile.read_text(errors="replace")
+    # The module's makefile: GNUmakefile with GCC (BaseTools' GenMake).
+    makefile = dxe.parent / "GNUmakefile"
+    if not makefile.is_file():
+        return {}, [f"{makefile}: missing, so the build's flags cannot be read"]
+    ndebug = "MDEPKG_NDEBUG" in makefile.read_text(errors="replace")
     facts: dict[str, object] = {
         "target": flavour,
         "asserts_compiled": not ndebug,

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import lzma
 import sys
+import tarfile
 from pathlib import Path
 
 
@@ -56,7 +58,7 @@ def main(argv: list[str]) -> int:
 
         try:
             install.install(args.repo, args.source, args.prefix, args.sha256, args.symbols)
-        except (install.InstallError, OSError, ValueError) as err:
+        except (install.InstallError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, lzma.LZMAError) as err:
             print(f"build.sh install: {err}", file=sys.stderr)
             return 1
         return 0

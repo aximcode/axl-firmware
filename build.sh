@@ -190,7 +190,8 @@ case "${1:-}" in
     check)
         (($# == 2)) || usage
         venv
-        axlfw "$py" check --release-dir "$(cd "$2" && pwd)" ${QEMU_DIR:+--qemu-dir "$QEMU_DIR"}
+        rd=$(cd "$2" 2>/dev/null && pwd) || die "check: no directory $2"
+        axlfw "$py" check --release-dir "$rd" ${QEMU_DIR:+--qemu-dir "$QEMU_DIR"}
         exit
         ;;
     build) shift ;;
@@ -300,6 +301,7 @@ else
     fi
 fi
 before=$(tree_state "$src")
+touch "$work/.source-stamp"
 
 # QEMU's roms/edk2-build.config (v10.0.0), [opts.common]: every image.
 common_opts=(
@@ -340,6 +342,8 @@ release_date=$(git -C "$src" log -1 --pretty=format:%cd --date=format:%m/%d/%Y "
 # The workspace: BaseTools copied in and built there; the packages the
 # patches touch copied and patched; Conf and Build of its own.
 ws="$work/ws"
+# A run cut short may leave read-only files copied from the source.
+[[ ! -e "$ws" ]] || chmod -R u+w "$ws"
 rm -rf "$ws"
 mkdir -p "$ws/overlay" "$ws/Conf"
 # copy_tracked <dir...>: the source's tracked files under each dir (their
@@ -424,6 +428,14 @@ after=$(tree_state "$src")
 if [[ "$before" != "$after" ]]; then
     diff <(echo "$before") <(echo "$after") >&2 || true
     die "the build changed the source tree $src (above)"
+fi
+# git collapses an ignored directory to one line and never sees a change
+# inside it (a Build/ or Conf/ of the tree's own): any file or directory
+# modified since the stamp, outside .git, is a write.
+touched=$(find "$src" -path '*/.git' -prune -o -newer "$work/.source-stamp" -print | head -20)
+if [[ -n "$touched" ]]; then
+    echo "$touched" >&2
+    die "the build wrote into the source tree $src (above)"
 fi
 echo "+ the source tree is as it was: nothing written into $src"
 

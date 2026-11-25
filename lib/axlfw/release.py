@@ -166,17 +166,27 @@ def stage_images(ws: Path, toolchain: str, stage: Path) -> list[str]:
     return problems
 
 
-def licenses(src: Path, ws: Path, stage: Path) -> list[str]:
+# Licence files a submodule names otherwise than LICENSE*, COPYING*,
+# NOTICE* or LICENCE*: libfdt is dual-licensed by two files named for
+# their licences.
+LICENSE_FILES = {"MdePkg/Library/BaseFdtLib/libfdt": ("BSD-2-Clause", "GPL")}
+
+
+def licenses(src: Path, ws: Path, stage: Path) -> tuple[list[str], list[str]]:
     """edk2's licence, and each bundled third-party part's that the build used.
 
-    A submodule counts as built in when a module's Makefile names a path
-    in it. Returns the files copied, relative to stage.
+    A submodule counts as built in when a module's makefile (GNUmakefile,
+    with GCC) names a path in it. Returns the files copied, relative to
+    stage, and the problems: a built-in part with no licence file found.
     """
     out = stage / "LICENSES"
     out.mkdir()
     shutil.copyfile(src / "License.txt", out / "edk2-License.txt")
     copied = ["LICENSES/edk2-License.txt"]
-    makefiles = [p.read_text(errors="replace") for p in (ws / "Build").rglob("Makefile")]
+    problems: list[str] = []
+    makefiles = [p.read_text(errors="replace") for p in (ws / "Build").rglob("GNUmakefile")]
+    if not makefiles:
+        return copied, [f"{ws / 'Build'}: no module GNUmakefile, so the parts built in are unknown"]
     gitmodules = (src / ".gitmodules").read_text()
     paths = [line.split("=", 1)[1].strip() for line in gitmodules.splitlines() if line.strip().startswith("path")]
     for sub in sorted(paths):
@@ -185,14 +195,21 @@ def licenses(src: Path, ws: Path, stage: Path) -> list[str]:
         names = sorted(
             p
             for p in (src / sub).iterdir()
-            if p.is_file() and p.name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "LICENCE"))
+            if p.is_file()
+            and (
+                p.name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "LICENCE"))
+                or p.name in LICENSE_FILES.get(sub, ())
+            )
         )
+        if not names:
+            problems.append(f"{src / sub}: built in, but no licence file found")
+            continue
         dest = out / sub.replace("/", "_")
         dest.mkdir()
         for p in names:
             shutil.copyfile(p, dest / p.name)
             copied.append(f"LICENSES/{dest.name}/{p.name}")
-    return copied
+    return copied, problems
 
 
 # The symbols a debugger needs first: the DXE core, BDS and the Shell.
@@ -298,7 +315,10 @@ def assemble(a: AssembleArgs) -> int:
     (stage / "patches").mkdir()
     for p in a.patches:
         shutil.copyfile(p, stage / "patches" / p.name)
-    lic = licenses(a.src, a.ws, stage)
+    lic, problems = licenses(a.src, a.ws, stage)
+    if problems:
+        print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
+        return 1
     (stage / "descriptors").mkdir()
     for img in IMAGES:
         _json(stage / "descriptors" / img.descriptor(rel), descriptor(img, rel, a.tag, a.commit, ""))
@@ -335,8 +355,8 @@ def assemble(a: AssembleArgs) -> int:
     epoch = int(datetime.datetime.strptime(a.release_date, "%m/%d/%Y").replace(tzinfo=datetime.timezone.utc).timestamp())
     symbols: dict[str, str] = {}
     a.dist.mkdir(parents=True, exist_ok=True)
-    for old in a.dist.glob("axl-firmware-*"):
-        old.unlink()
+    for old in [*a.dist.glob("axl-firmware-*"), a.dist / "SHA256SUMS"]:
+        old.unlink(missing_ok=True)
     for arch in checks.ARCHES:
         img = Image(arch, "DEBUG")
         b = img.build(a.ws, a.toolchain)

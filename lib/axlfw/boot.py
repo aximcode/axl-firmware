@@ -39,6 +39,7 @@ SHAPES = ("serial", "std-vga", "virtio-gpu", "bochs-display")
 _DEVICE = {"std-vga": "VGA", "virtio-gpu": "virtio-gpu-pci", "bochs-display": "bochs-display"}
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
+_PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
 _MODE = re.compile(r"Col\s+(\d+)\s+Row\s+(\d+)\s+(\*?)")
 
 
@@ -136,33 +137,45 @@ class Guest:
         return out.split("\n", 1)[1] if "\n" in out else ""
 
     def monitor(self, line: str) -> str:
-        """One HMP command; its reply."""
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(30)
-            s.connect(str(self.monitor_path))
-            reply = b""
-            while b"(qemu) " not in reply:
-                reply += s.recv(4096)
-            s.sendall(line.encode() + b"\n")
-            reply = b""
-            while reply.count(b"(qemu) ") < 1:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                reply += chunk
+        """One HMP command; its reply. A QEMU gone is a BootError."""
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(30)
+                s.connect(str(self.monitor_path))
+                reply = b""
+                while b"(qemu) " not in reply:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        msg = f"{self.name}: the monitor closed before its prompt"
+                        raise BootError(msg)
+                    reply += chunk
+                s.sendall(line.encode() + b"\n")
+                reply = b""
+                while b"(qemu) " not in reply:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    reply += chunk
+        except OSError as err:
+            msg = f"{self.name}: monitor `{line}`: {err}"
+            raise BootError(msg) from err
         return reply.decode("latin-1")
 
-    def screen_size(self, path: Path) -> tuple[int, int]:
-        """The display's size, from a screendump (PPM)."""
+    def screen(self, path: Path) -> tuple[int, int, bool]:
+        """The display's size, and whether any pixel is lit, from a screendump.
+
+        A display QEMU blanks (a VGA whose attribute controller was never
+        unblanked) dumps all black at its full size: the size alone does not
+        show that anything is drawn.
+        """
         self.monitor(f"screendump {path}")
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if path.is_file() and path.stat().st_size > 0:
-                fields = path.read_bytes()[:64].split()
-                if len(fields) >= 3 and fields[0] == b"P6":
-                    return int(fields[1]), int(fields[2])
+            got = parse_ppm(path.read_bytes()) if path.is_file() else None
+            if got:
+                return got
             time.sleep(0.2)
-        msg = f"{self.name}: no screendump at {path}"
+        msg = f"{self.name}: no complete screendump at {path}"
         raise BootError(msg)
 
     def wait_exit(self, timeout: float) -> int:
@@ -242,6 +255,18 @@ def qemu_argv(qemu_dir: Path | None, s: ImageSet, vars_copy: Path, esp: Path) ->
         "-device",
         "virtio-blk-pci,drive=esp",
     ]
+
+
+def parse_ppm(data: bytes) -> tuple[int, int, bool] | None:
+    """A complete binary PPM's width, height, and whether any pixel is lit."""
+    m = _PPM.match(data)
+    if not m:
+        return None
+    w, h = int(m.group(1)), int(m.group(2))
+    pixels = m.group(4)
+    if len(pixels) < 3 * w * h:
+        return None
+    return w, h, pixels.strip(b"\0") != b""
 
 
 def text_modes(out: str) -> dict[str, object]:
@@ -351,11 +376,12 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
                     f"{s.arch} {s.flavour}: after a cold start the variable reads {got or 'nothing'}, not {token}"
                 )
             modes["std-vga"] = text_modes(g.command("mode"))
-            if s.arch == "x64":
-                size = g.screen_size(Path(tmp) / "std-vga.ppm")
-                result.facts["gop_std_vga"] = list(size)
-                if size != GOP_DEFAULT:
-                    result.problems.append(f"x64 {s.flavour}: std-VGA's GOP is {size[0]}x{size[1]}, not 1280x800")
+            w, h, lit = g.screen(Path(tmp) / "std-vga.ppm")
+            result.facts["gop_std_vga"] = {"size": [w, h], "drawn": lit}
+            if s.arch == "x64" and (w, h) != GOP_DEFAULT:
+                result.problems.append(f"x64 {s.flavour}: std-VGA's GOP is {w}x{h}, not 1280x800")
+            if not lit:
+                result.problems.append(f"{s.arch} {s.flavour}: std-VGA shows nothing (a {w}x{h} screen, all black)")
             g.send("exit\r")
             g.expect(re.compile(r"Boot Maintenance Manager"), "front page after the Shell's exit")
             result.facts["front_page_after_exit"] = True
@@ -376,12 +402,12 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
             fields = line.split()
             # DRV VERSION TYPE CFG DIAG #D #C DRIVER-NAME...: #D, the devices managed.
             devices = int(fields[5]) if len(fields) > 6 and fields[5].isdigit() else 0
-            size = g.screen_size(Path(tmp) / "bochs.ppm")
-            result.facts["bochs_display"] = {"devices": devices, "gop": list(size)}
-            if devices < 1 or size != GOP_DEFAULT:
+            w, h, lit = g.screen(Path(tmp) / "bochs.ppm")
+            result.facts["bochs_display"] = {"devices": devices, "size": [w, h], "drawn": lit}
+            if devices < 1 or (w, h) != GOP_DEFAULT or not lit:
                 result.problems.append(
-                    f"{s.arch} {s.flavour}: bochs-display has no GOP (QemuVideoDxe manages "
-                    f"{devices} devices; the display is {size[0]}x{size[1]})"
+                    f"{s.arch} {s.flavour}: bochs-display has no working GOP (QemuVideoDxe manages "
+                    f"{devices} devices; the display is {w}x{h}, {'drawn' if lit else 'all black'})"
                 )
 
         attempt("bochs-display", ["-device", _DEVICE["bochs-display"]], bochs)

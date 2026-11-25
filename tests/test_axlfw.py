@@ -107,7 +107,7 @@ def _build(root: Path, flavour: str, arch: str, mask: str, level: str, menu: str
     (dxe / "AutoGen.c").write_text(
         f"#define _PCD_VALUE_PcdDebugPrintErrorLevel  {level}U\n#define _PCD_VALUE_PcdDebugPropertyMask  {mask}U\n"
     )
-    (dxe.parent / "Makefile").write_text("CC_FLAGS = -Os" + (" -DMDEPKG_NDEBUG\n" if ndebug else "\n"))
+    (dxe.parent / "GNUmakefile").write_text("CC_FLAGS = -Os" + (" -DMDEPKG_NDEBUG\n" if ndebug else "\n"))
     (bds / "AutoGen.h").write_text(
         f"GLOBAL_REMOVE_IF_UNREFERENCED const UINT8 _gPcd_FixedAtBuild_PcdBootManagerMenuFile[16] = {{{menu}}};\n"
     )
@@ -166,15 +166,19 @@ class BuildFactsTests(unittest.TestCase):
     def test_release_needs_ndebug(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             b = _build(Path(t), "RELEASE", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=False)
-            mk = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/Makefile"
+            mk = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/GNUmakefile"
             self.assertEqual(
                 checks.build_facts(b, "x64", "RELEASE")[1], [f"{mk}: a RELEASE build without MDEPKG_NDEBUG"]
+            )
+            mk.unlink()
+            self.assertEqual(
+                checks.build_facts(b, "x64", "RELEASE"), ({}, [f"{mk}: missing, so the build's flags cannot be read"])
             )
 
     def test_flavour_swapped(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             b = _build(Path(t), "RELEASE", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=True)
-            mk = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/Makefile"
+            mk = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/GNUmakefile"
             self.assertEqual(
                 checks.build_facts(b, "x64", "DEBUG")[1],
                 [f"{b}: not a DEBUG build", f"{mk}: a DEBUG build with MDEPKG_NDEBUG"],
@@ -206,6 +210,13 @@ class BootParseTests(unittest.TestCase):
         with self.assertRaises(boot.BootError):
             boot.text_modes("'mode' is not recognized\n")
 
+    def test_screendump(self) -> None:
+        black = b"P6\n4 2\n255\n" + b"\0" * 24
+        self.assertEqual(boot.parse_ppm(black), (4, 2, False))
+        self.assertEqual(boot.parse_ppm(black[:-1] + b"\x01"), (4, 2, True))
+        self.assertIsNone(boot.parse_ppm(black[:-3]))
+        self.assertIsNone(boot.parse_ppm(b"P5\n4 2\n255\n" + b"\0" * 8))
+
     def test_dmpstore(self) -> None:
         out = (
             "Variable NV+BS '7F1E3A52-6B0D-4C8E-9A27-5D4B1C3E2F60:AxlFirmwareNvCheck' DataSize = 0x08\n"
@@ -235,10 +246,12 @@ class SymbolsTests(unittest.TestCase):
             )
 
 
-def _fake_release(root: Path, rel: str, corrupt: bool = False) -> Path:
+def _fake_release(
+    root: Path, rel: str, corrupt: bool = False, fmt: int = 2, outside: bool = False, asset: str | None = None
+) -> Path:
     """A small release tarball shaped as a real one, and its SHA256SUMS."""
     tag, commit = "edk2-stable202602", "b7a715f7c03c45c6b4575bf88596bfd79658b8ce"
-    stage = root / f"stage-{rel}"
+    stage = Path(tempfile.mkdtemp(dir=root, prefix=f"stage-{rel}-"))
     top = stage / f"axl-firmware-{rel}"
     images: dict[str, object] = {}
     (top / "descriptors").mkdir(parents=True)
@@ -257,8 +270,13 @@ def _fake_release(root: Path, rel: str, corrupt: bool = False) -> Path:
         (top / "descriptors" / img.descriptor(rel)).write_text(
             json.dumps(release.descriptor(img, rel, tag, commit, ""))
         )
+    if outside:
+        d = top / "descriptors" / release.Image("x64", "DEBUG").descriptor(rel)
+        bad = json.loads(d.read_text())
+        bad["mapping"]["executable"]["filename"] = "../../etc/passwd"
+        d.write_text(json.dumps(bad))
     manifest = {
-        "format": 2,
+        "format": fmt,
         "release": rel,
         "images": images,
         "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in release.IMAGES],
@@ -266,9 +284,8 @@ def _fake_release(root: Path, rel: str, corrupt: bool = False) -> Path:
     (top / "manifest.json").write_text(json.dumps(manifest))
     if corrupt:
         (top / "x64" / "code.fd").write_bytes(b"changed")
-    dist = root / f"dist-{rel}"
-    dist.mkdir()
-    out = dist / f"axl-firmware-{rel}.tar.xz"
+    dist = Path(tempfile.mkdtemp(dir=root, prefix=f"dist-{rel}-"))
+    out = dist / (asset or f"axl-firmware-{rel}.tar.xz")
     release._tar(out, top, f"axl-firmware-{rel}", 0)  # pyright: ignore[reportPrivateUsage]
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     (dist / "SHA256SUMS").write_text(f"{digest}  {out.name}\n")
@@ -330,7 +347,7 @@ class InstallTests(unittest.TestCase):
         # The same release again replaces its directory whole.
         install.install("o/r", str(r2), self.prefix, None, symbols=False)
         self.assertEqual(sorted(p.name for p in self.prefix.iterdir()), sorted(
-            ["descriptors", "edk2-stable202602-r1", "edk2-stable202602-r2"]))
+            [".lock", "descriptors", "edk2-stable202602-r1", "edk2-stable202602-r2"]))
 
     def test_wrong_digest(self) -> None:
         r1 = _fake_release(self.root, "edk2-stable202602-r1")
@@ -338,8 +355,37 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(r1), self.prefix, "0" * 64, symbols=False)
         self.assertEqual(str(cm.exception), f"{r1}: sha256 {got}, expected {'0' * 64}")
-        self.assertEqual(os.listdir(self.prefix), [])
+        self.assertEqual(os.listdir(self.prefix), [".lock"])
         install.install("o/r", str(r1), self.prefix, got, symbols=False)
+
+    def test_refusals_leave_the_install_as_it_was(self) -> None:
+        r1 = _fake_release(self.root, "edk2-stable202602-r1")
+        install.install("o/r", str(r1), self.prefix, None, symbols=False)
+        before = sorted(str(p.relative_to(self.prefix)) for p in self.prefix.rglob("*"))
+        top = "axl-firmware-edk2-stable202602-r1"
+        cases = {
+            "format": (_fake_release(self.root, "edk2-stable202602-r1", fmt=1),
+                       f"manifest format 1; this install reads format 2"),
+            "outside": (_fake_release(self.root, "edk2-stable202602-r1", outside=True),
+                        "the manifest names '../../etc/passwd', outside the release"),
+        }
+        for label, (tarball, tail) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(install.InstallError) as cm:
+                    install.install("o/r", str(tarball), self.prefix, None, symbols=False)
+                self.assertTrue(str(cm.exception).endswith(tail), str(cm.exception))
+                self.assertIn(f"/{top}", str(cm.exception))
+                after = sorted(str(p.relative_to(self.prefix)) for p in self.prefix.rglob("*"))
+                self.assertEqual(after, before)
+
+    def test_bad_release_name(self) -> None:
+        bad = _fake_release(self.root, "edk2-stable202602-r1", asset="axl-firmware-...tar.xz")
+        with self.assertRaises(install.InstallError) as cm:
+            install.install("o/r", str(bad), self.prefix, None, symbols=False)
+        self.assertEqual(
+            str(cm.exception),
+            f"{bad}: not named axl-firmware-<release>.tar.xz, with a release edk2-stableYYYYMM-rN",
+        )
 
     def test_no_sums(self) -> None:
         r1 = _fake_release(self.root, "edk2-stable202602-r1")
@@ -353,7 +399,7 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(r1), self.prefix, None, symbols=False)
         self.assertRegex(str(cm.exception), r"/axl-firmware-edk2-stable202602-r1/x64/code\.fd: not x64's code as its manifest records it$")
-        self.assertEqual(os.listdir(self.prefix), [])
+        self.assertEqual(os.listdir(self.prefix), [".lock"])
 
     def test_member_outside(self) -> None:
         for name in ("../escape", "axl-firmware-edk2-stable202602-r9/../../escape", "elsewhere/file"):
