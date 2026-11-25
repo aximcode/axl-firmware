@@ -4,20 +4,29 @@
 #     stand-in images, the Shell's PE checks, the AutoGen facts, the
 #     descriptors exactly, the Shell output parsers, and the install from
 #     local tarballs (digests, a corrupt set, an escaping member, upgrades);
-#   - build.sh's own arguments and `verify` errors, exactly;
+#   - build.sh's own arguments and `verify` errors, exactly; two runs making
+#     the venv at once (one makes it); a failed build leaving no earlier
+#     release in dist/;
 #   - `check-source` against a copy of an edk2 source at the pinned tag (by
 #     default build.sh's cache; AXL_FIRMWARE_EDK2=<dir> for another): the
 #     copy as it is passes, and a tracked file changed, an untracked file,
 #     a file hidden from git status (in the tree and in a submodule), a
 #     submodule not checked out, the tag moved, and a directory that is no
-#     checkout each fail, said; an ignored file (a build's output) passes;
+#     checkout each fail, said, as does an untracked file hidden by
+#     .git/info/exclude or the user's core.excludesFile (in the tree and in a
+#     submodule); a file the tree's .gitignore ignores (a build's output)
+#     passes;
 #   - each checked GUID against its INF in that source (`source-guids`);
 #   - real images: the distribution's OVMF (Fedora/EL paths) as controls,
 #     which must fail exactly (no VirtioFsDxe, no pointer drivers; the
 #     Secure Boot image holding SecureBootConfigDxe), and an installed
 #     release's images, which must pass.
 # A check whose input is absent says SKIP and why; the run ends saying how
-# many were skipped. AXL_FIRMWARE_REQUIRE=1 makes a SKIP a failure.
+# many were skipped. AXL_FIRMWARE_REQUIRE makes a SKIP a failure: 1 for
+# every one, or the names of those that must run, of "source" (the source
+# checks), "controls" (the distribution's images, on Fedora or EL) and
+# "installed" (an installed release); CI's build job requires "source
+# installed".
 set -euo pipefail
 cd "$(dirname "$0")/.."
 here=$PWD
@@ -33,7 +42,24 @@ fail() {
     echo "FAIL: $*" >&2
     failed=1
 }
+for name in ${AXL_FIRMWARE_REQUIRE:-}; do
+    case "$name" in
+        1 | source | controls | installed) ;;
+        *)
+            echo "tests/firmware-tests.sh: AXL_FIRMWARE_REQUIRE: no check '$name' (1, source, controls, installed)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# skip <name> <why>: the check <name> did not run.
 skip() {
+    local name=$1
+    shift
+    if [[ " ${AXL_FIRMWARE_REQUIRE:-} " == *" $name "* ]]; then
+        fail "$*: AXL_FIRMWARE_REQUIRE requires $name"
+        return
+    fi
     echo "SKIP $*" >&2
     skipped=$((skipped + 1))
 }
@@ -74,7 +100,8 @@ usage="usage: build.sh build [--edk2 DIR] [--install] [--prefix DIR]
        build.sh install --from <tarball|release-tag> [--prefix DIR] [--sha256 HEX] [--symbols]
        build.sh check <release-dir>
        build.sh verify <x64|aarch64> <code-image>
-       build.sh check-source <dir>"
+       build.sh check-source <dir>
+       build.sh fetch"
 expect "no command" 2 "" "$usage" -- "$script"
 expect "an unknown command" 2 "" "$usage" -- "$script" make
 expect "an unknown build option" 2 "" "$usage" -- "$script" build --instal
@@ -89,10 +116,49 @@ expect "verify, not a volume" 1 "" "build.sh: x64: $nv: no firmware volume found
 expect "check-source, no checkout" 1 "" "build.sh: $tmp: not a git checkout" -- \
     "$script" check-source "$tmp"
 
+# Two runs making the venv at once: one makes it, the other waits for it. A
+# stand-in python3 counts the venvs made; its venv's pip takes a second.
+fake=$tmp/fake-python
+mkdir -p "$fake"
+cat >"$fake/python3" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "-m venv" ]]; then
+    echo venv >>"$AXLFW_TEST_COUNT"
+    mkdir -p "$3/bin"
+    printf '#!/usr/bin/env bash\n[[ $1 != -m ]] || sleep 1\n' >"$3/bin/python"
+    chmod +x "$3/bin/python"
+fi
+EOF
+chmod +x "$fake/python3"
+race=(env XDG_CACHE_HOME="$tmp/race-cache" PATH="$fake:$PATH" AXLFW_TEST_COUNT="$tmp/venvs"
+    "$script" verify x64 "$here/tests/fixtures/volumes/both.fd")
+"${race[@]}" >"$tmp/race1" 2>&1 &
+first=$!
+"${race[@]}" >"$tmp/race2" 2>&1 || fail "the venv race: the second run failed: $(cat "$tmp/race2")"
+wait "$first" || fail "the venv race: the first run failed: $(cat "$tmp/race1")"
+if [[ "$(cat "$tmp/venvs")" == venv ]]; then
+    echo "ok: two runs make one venv"
+else
+    fail "the venv race: venvs made: $(wc -l <"$tmp/venvs")"
+fi
+
+# A build that fails leaves no earlier release in dist/.
+stale=$tmp/stale
+mkdir -p "$stale/dist"
+cp "$script" "$stale/build.sh"
+touch "$stale/dist/axl-firmware-edk2-stable202611-r1.tar.xz" "$stale/dist/SHA256SUMS" "$stale/dist/notes.txt"
+if GCC_AARCH64_PREFIX=/nonexistent/ "$stale/build.sh" build >"$tmp/out" 2>&1; then
+    fail "a failed build: it did not fail: $(cat "$tmp/out")"
+elif [[ "$(find "$stale/dist" -mindepth 1 -printf '%f ')" != "notes.txt " ]]; then
+    fail "a failed build left in dist/: $(find "$stale/dist" -mindepth 1 -printf '%f ')"
+else
+    echo "ok: a failed build leaves no earlier release in dist/"
+fi
+
 # The source checks, on a copy (the cache is read-only).
 src=${AXL_FIRMWARE_EDK2:-$cache/axl-firmware/edk2/$tag}
 if [[ ! -e "$src/.git" ]]; then
-    skip "the source checks: no edk2 source at $src (build.sh build fetches it; or AXL_FIRMWARE_EDK2=<dir>)"
+    skip source "the source checks: no edk2 source at $src (build.sh build fetches it; or AXL_FIRMWARE_EDK2=<dir>)"
 else
     expect "each GUID is its INF's" 0 "$src: every checked GUID is its INF's (or DEC's)" "" -- \
         "$py" -E -s "$here/lib/axlfw-run.py" source-guids "$src"
@@ -109,7 +175,22 @@ else
     echo new >"$c/OvmfPkg/stray.inc"
     expect "an untracked file" 1 "" "build.sh: $c: files changed or untracked:
 ?? OvmfPkg/stray.inc" -- "$script" check-source "$c"
+    # Hidden by the user's own ignore rules, still untracked.
+    echo 'stray.inc' >>"$c/.git/info/exclude"
+    expect "an untracked file .git/info/exclude hides" 1 "" "build.sh: $c: files changed or untracked:
+?? OvmfPkg/stray.inc" -- "$script" check-source "$c"
+    sed -i.bak '$d' "$c/.git/info/exclude" && rm "$c/.git/info/exclude.bak"
+    printf '[core]\n\texcludesFile = %s\n' "$tmp/user-ignore" >"$tmp/user-gitconfig"
+    echo '*.inc' >"$tmp/user-ignore"
+    expect "an untracked file core.excludesFile hides" 1 "" "build.sh: $c: files changed or untracked:
+?? OvmfPkg/stray.inc" -- env GIT_CONFIG_GLOBAL="$tmp/user-gitconfig" "$script" check-source "$c"
     rm "$c/OvmfPkg/stray.inc"
+    fdt=$c/MdePkg/Library/BaseFdtLib/libfdt
+    echo new >"$fdt/stray.inc"
+    expect "a submodule's untracked file core.excludesFile hides" 1 "" \
+        "build.sh: $c: files changed or untracked:
+?? MdePkg/Library/BaseFdtLib/libfdt/stray.inc" -- env GIT_CONFIG_GLOBAL="$tmp/user-gitconfig" "$script" check-source "$c"
+    rm "$fdt/stray.inc"
     mkdir -p "$c/Build/x"
     echo output >"$c/Build/x/out.efi"
     expect "an ignored build output" 0 "$c: $tag at $commit, as committed" "" -- "$script" check-source "$c"
@@ -118,7 +199,6 @@ else
     expect "a file hidden from git status" 1 "" "build.sh: $c: files hidden from git status:
 S License.txt" -- "$script" check-source "$c"
     git -C "$c" update-index --no-skip-worktree License.txt
-    fdt=$c/MdePkg/Library/BaseFdtLib/libfdt
     git -C "$fdt" update-index --skip-worktree README
     expect "a submodule's file hidden from git status" 1 "" \
         "build.sh: $c: files hidden from git status:
@@ -147,9 +227,9 @@ ps2="Ps2MouseDxe (08464531-4C99-4C4C-A887-8D8BA4BBB063)"
 control() {
     local name=$1 image=$2 digest=$3 want=$4
     if [[ ! -f "$image" ]]; then
-        skip "$name: no $image"
+        skip controls "$name: no $image"
     elif [[ "$(sha256sum <"$image" | cut -d' ' -f1)" != "$digest" ]]; then
-        skip "$name: $image is not the build the expected text was taken from ($digest)"
+        skip controls "$name: $image is not the build the expected text was taken from ($digest)"
     else
         expect "$name" 1 "" "$want" -- "$script" verify x64 "$image"
     fi
@@ -175,13 +255,13 @@ if [[ -n "$installed" && -f "$installed/manifest.json" ]]; then
             "$script" verify "$arch" "$installed/$dir/code.fd"
     done
 else
-    skip "the installed images: none in $data/axl-firmware"
+    skip installed "the installed images: none in $data/axl-firmware"
 fi
 
 [[ $failed == 0 ]] || exit 1
 if ((skipped > 0)); then
     echo "tests/firmware-tests.sh: passed, $skipped skipped"
-    [[ "${AXL_FIRMWARE_REQUIRE:-}" != 1 ]] || {
+    [[ " ${AXL_FIRMWARE_REQUIRE:-} " != *" 1 "* ]] || {
         echo "tests/firmware-tests.sh: AXL_FIRMWARE_REQUIRE=1: a SKIP fails" >&2
         exit 1
     }

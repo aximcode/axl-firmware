@@ -127,6 +127,10 @@ def check_shell(arch: str, path: Path) -> list[str]:
     (pe,) = struct.unpack_from("<I", data, 0x3C)
     if data[pe : pe + 4] != b"PE\0\0":
         return [f"{path}: not a PE image"]
+    # The signature, the file header (20 bytes), and the optional header up
+    # to its Subsystem field (offset 68, two bytes).
+    if len(data) < pe + 24 + 70:
+        return [f"{path}: a truncated PE header ({len(data)} bytes)"]
     (machine,) = struct.unpack_from("<H", data, pe + 4)
     (magic,) = struct.unpack_from("<H", data, pe + 24)
     (subsystem,) = struct.unpack_from("<H", data, pe + 24 + 68)

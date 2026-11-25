@@ -1,6 +1,7 @@
 """Assemble a release from a finished build, and re-check an unpacked one.
 
-The release (README.md, "Release contents"):
+The release (docs/DESIGN.md §4.15 for the walker that checks it, and
+docs/RELEASE-FORMAT.md for the consumers' contract):
 
     axl-firmware-<release>/
       x64/{code.fd,vars.fd,Shell_X64.efi}              DEBUG, the default
@@ -20,15 +21,15 @@ import concurrent.futures
 import datetime
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
-from axlfw import boot, checks
+from axlfw import boot, checks, install
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -53,7 +54,12 @@ class Image:
     @property
     def shell(self) -> str:
         """The Shell's file name."""
-        return f"Shell_{self.arch.upper()}.efi"
+        return Path(self.files["shell"]).name
+
+    @property
+    def files(self) -> dict[str, str]:
+        """Its code, vars and Shell, relative to the release: the manifest's paths."""
+        return install.image_files(self.dir)
 
     @property
     def machine(self) -> str:
@@ -72,9 +78,7 @@ class Image:
 
     def descriptor(self, release: str) -> str:
         """Its QEMU firmware descriptor's file name: DEBUG first by name."""
-        if self.flavour == "DEBUG":
-            return f"10-axl-firmware-{release}-{self.arch}.json"
-        return f"20-axl-firmware-{release}-release-{self.arch}.json"
+        return install.descriptor_name(self.dir, release)
 
 
 IMAGES = tuple(Image(a, f) for f in checks.FLAVOURS for a in checks.ARCHES)
@@ -96,45 +100,13 @@ def file_entry(root: Path, rel: str) -> dict[str, object]:
 
 
 def features(img: Image) -> list[str]:
-    """The descriptor's features: only what the build has.
-
-    X64 as QEMU labels its own build with these flags (S3, SEV, SEV-ES);
-    DEBUG adds its debug output: X64's on the 0x402 debug port
-    (verbose-dynamic), AARCH64's on the serial port by static configuration
-    (verbose-static; errors only, but static serial output all the same).
-    RELEASE has none.
-    """
-    base = ["acpi-s3", "amd-sev", "amd-sev-es"] if img.arch == "x64" else []
-    if img.flavour == "DEBUG":
-        base.append("verbose-dynamic" if img.arch == "x64" else "verbose-static")
-    return base
+    """The descriptor's features: only what the build has (install.features)."""
+    return install.features(img.dir)
 
 
 def descriptor(img: Image, release: str, tag: str, commit: str, root: str) -> dict[str, object]:
-    """The QEMU firmware descriptor (docs/interop/firmware.json) of img.
-
-    root prefixes the images' paths: "" in the tarball, the install
-    directory (with a trailing slash) once installed.
-    """
-    what = "X64 (q35)" if img.arch == "x64" else "AARCH64 (virt)"
-    return {
-        "description": f"axl-firmware {release} for {what}, {img.flavour}, edk2 {tag}",
-        "interface-types": ["uefi"],
-        "mapping": {
-            "device": "flash",
-            "mode": "split",
-            "executable": {"filename": f"{root}{img.dir}/code.fd", "format": "raw"},
-            "nvram-template": {"filename": f"{root}{img.dir}/vars.fd", "format": "raw"},
-        },
-        "targets": [
-            {
-                "architecture": "x86_64" if img.arch == "x64" else "aarch64",
-                "machines": ["pc-q35-*"] if img.arch == "x64" else ["virt-*"],
-            }
-        ],
-        "features": features(img),
-        "tags": [tag, commit, release, img.flavour],
-    }
+    """The QEMU firmware descriptor of img (install.descriptor)."""
+    return install.descriptor(img.dir, release, tag, commit, root)
 
 
 def _json(path: Path, value: object) -> None:
@@ -246,21 +218,38 @@ def static_checks(stage: Path) -> tuple[dict[str, dict[str, object]], list[str]]
     return verified, problems
 
 
+def _setting(name: str, default: str, kind: type[int] | type[float], what: str) -> int | float | str:
+    """A positive number from the environment, or what is wrong with it."""
+    value = os.environ.get(name, default)
+    try:
+        number = kind(value)
+    except ValueError:
+        number = 0
+    return number if number > 0 and math.isfinite(number) else f"{name}={value!r}: not a positive {what}"
+
+
 def boot_checks(
     root: Path, tag: str, qemu_dir: Path | None, logs: Path
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
-    """Every image set's boot checks, AXLFW_BOOT_JOBS (default 2) at a time."""
-    jobs = int(os.environ.get("AXLFW_BOOT_JOBS", "2"))
-    timeout = float(os.environ.get("AXLFW_BOOT_TIMEOUT", "180"))
+    """Every image set's boot checks, AXLFW_BOOT_JOBS (default 2) at a time.
+
+    A bad setting, or a QEMU not found, is a problem before any boot.
+    """
+    jobs = _setting("AXLFW_BOOT_JOBS", "2", int, "whole number")
+    timeout = _setting("AXLFW_BOOT_TIMEOUT", "180", float, "number of seconds")
+    problems = [x for x in (jobs, timeout) if isinstance(x, str)]
+    problems += boot.missing_qemu(qemu_dir, checks.ARCHES)
+    if problems:
+        return {}, problems
+    assert not isinstance(jobs, str) and not isinstance(timeout, str)  # noqa: S101 - refused above
     facts: dict[str, dict[str, object]] = {}
-    problems: list[str] = []
 
     def one(img: Image) -> boot.Result:
         d = root / img.dir
         s = boot.ImageSet(img.arch, img.flavour, d / "code.fd", d / "vars.fd", d / img.shell, tag)
         return boot.run(s, qemu_dir, logs, timeout)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=int(jobs)) as pool:
         results = list(pool.map(one, IMAGES))
     for img, r in zip(IMAGES, results):
         facts[img.dir] = r.facts
@@ -308,7 +297,8 @@ def assemble(a: AssembleArgs) -> int:
     measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs")
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
-        print(f"(console transcripts in {a.stage / 'boot-logs'})", file=sys.stderr)
+        if measured:
+            print(f"(console transcripts in {a.stage / 'boot-logs'})", file=sys.stderr)
         return 1
     print("+ boot checks passed", flush=True)
 
@@ -343,9 +333,7 @@ def assemble(a: AssembleArgs) -> int:
                 f"PcdFirmwareReleaseDateString=L{a.release_date}\\0",
                 *a.pcds[img.arch].split(),
             ],
-            "code": file_entry(stage, f"{d}/code.fd"),
-            "vars": file_entry(stage, f"{d}/vars.fd"),
-            "shell": file_entry(stage, f"{d}/{img.shell}"),
+            **{key: file_entry(stage, rel_path) for key, rel_path in img.files.items()},
             "descriptor": f"descriptors/{img.descriptor(rel)}",
             "debug": dbg,
             "secure_boot": False,
@@ -430,26 +418,72 @@ class AssembleArgs:
     qemu_dir: Path | None
 
 
+class ManifestError(Exception):
+    """A manifest lacks a field, or has one of the wrong type."""
+
+
+def _field(manifest: dict[str, object], dotted: str) -> object:
+    """manifest's field at the dotted path; a ManifestError if there is none."""
+    value: object = manifest
+    for key in dotted.split("."):
+        parent = install.json_object(value)
+        value = parent.get(key) if parent is not None else None
+    if value is None:
+        msg = f"no {dotted}"
+        raise ManifestError(msg)
+    return value
+
+
+def _text(manifest: dict[str, object], dotted: str) -> str:
+    """manifest's string at the dotted path."""
+    value = _field(manifest, dotted)
+    if not isinstance(value, str):
+        msg = f"{dotted} is {value!r}, not a string"
+        raise ManifestError(msg)
+    return value
+
+
 def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
     """Re-check an unpacked release: its files, images, descriptors and boots.
 
-    The measured text modes must equal the manifest's.
+    Each image file must be where its set's directory says, and every set
+    there. The measured text modes must equal the manifest's.
     """
-    manifest = cast("dict[str, object]", json.loads((release_dir / "manifest.json").read_text()))
+    mpath = release_dir / "manifest.json"
+    try:
+        manifest = install.json_object(json.loads(mpath.read_text()))
+        if manifest is None:
+            msg = "not a JSON object"
+            raise ManifestError(msg)
+        rel = _text(manifest, "release")
+        tag = _text(manifest, "edk2.tag")
+        commit = _text(manifest, "edk2.commit")
+        images = install.json_object(_field(manifest, "images"))
+        if images is None:
+            msg = f"images is {manifest['images']!r}, not an object"
+            raise ManifestError(msg)
+    except (OSError, ValueError, ManifestError) as err:
+        print(f"FAIL: {mpath}: {err}", file=sys.stderr)
+        return 1
     problems: list[str] = []
     if manifest.get("format") != FORMAT:
         problems.append(f"manifest format {manifest.get('format')!r}, not {FORMAT}")
-    rel = str(manifest["release"])
-    edk2 = cast("dict[str, object]", manifest["edk2"])
-    tag, commit = str(edk2["tag"]), str(edk2["commit"])
-    images = cast("dict[str, dict[str, object]]", manifest["images"])
     if sorted(images) != sorted(img.dir for img in IMAGES):
         problems.append(f"manifest images {sorted(images)}, not {sorted(img.dir for img in IMAGES)}")
     for img in IMAGES:
-        entry = images.get(img.dir, {})
-        for key in ("code", "vars", "shell"):
-            f = cast("dict[str, object]", entry.get(key, {}))
-            path = release_dir / str(f.get("path", ""))
+        if img.dir not in images:
+            continue  # said above
+        entry = install.json_object(images[img.dir])
+        if entry is None:
+            problems.append(f"{img.dir}: the manifest's entry is {images[img.dir]!r}, not an object")
+            continue
+        for key, want in img.files.items():
+            f = install.json_object(entry.get(key)) or {}
+            got = f.get("path")
+            if got != want:
+                problems.append(f"{img.dir}: the manifest's {key} is {got!r}, not {want!r}")
+                continue
+            path = release_dir / want
             if not path.is_file() or path.stat().st_size != f.get("size") or sha256(path) != f.get("sha256"):
                 problems.append(f"{path}: not the manifest's {key} (size or sha256)")
         if entry.get("flavour") != img.flavour or entry.get("arch") != img.arch:
@@ -469,13 +503,17 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
         return 1
     measured, problems = boot_checks(release_dir, tag, qemu_dir, logs)
     for img in IMAGES:
-        want = cast("dict[str, object]", images[img.dir]["measured"]).get("text_modes")
+        if img.dir not in measured:
+            continue  # the boots did not run: said
+        recorded = install.json_object((install.json_object(images[img.dir]) or {}).get("measured")) or {}
+        want = recorded.get("text_modes")
         got = measured[img.dir].get("text_modes")
         if got != want:
             problems.append(f"{img.dir}: text modes measured {json.dumps(got)}, the manifest says {json.dumps(want)}")
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
-        print(f"(console transcripts in {logs})", file=sys.stderr)
+        if measured:
+            print(f"(console transcripts in {logs})", file=sys.stderr)
         return 1
     print(f"{release_dir}: every check passed")
     return 0

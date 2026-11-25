@@ -11,14 +11,16 @@ path holds the release's own Shell:
   a cold start; the `mode` list; the GOP's resolution (a screendump); then
   the Shell's `exit`, which must reach the front page;
 - virtio-gpu: the `mode` list;
-- bochs-display: the `mode` list, and the GOP QemuVideoDxe gives it (its
-  driver managing a device, and a screendump at the GOP's resolution).
+- bochs-display, without its EDID: the `mode` list, and the GOP
+  QemuVideoDxe gives it (its driver managing a device, and a screendump at
+  the firmware's default resolution).
 
 X64 runs under KVM when /dev/kvm is usable, else TCG; AARCH64 under TCG.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import secrets
@@ -41,10 +43,15 @@ SHAPES = ("serial", "std-vga", "virtio-gpu", "bochs-display")
 # hung after its banner (edk2 issue #11962, fixed by b8df7d9c).
 AARCH64_CPU = "cortex-a57"
 AARCH64_CPUS = ("max", "cortex-a57", "neoverse-v1")
-# std-VGA without its EDID: QemuVideoDxe takes an EDID's preferred mode over
-# PcdVideoHorizontalResolution/Vertical, and QEMU's default EDID asks 1280x800
-# too, so with it the check would measure QEMU, not the firmware's default.
-_DEVICE = {"std-vga": "VGA,edid=off", "virtio-gpu": "virtio-gpu-pci", "bochs-display": "bochs-display"}
+# std-VGA and bochs-display without their EDID: QemuVideoDxe takes an EDID's
+# preferred mode over PcdVideoHorizontalResolution/Vertical (for the whole
+# MMIO variant, both devices), and QEMU's default EDID asks 1280x800 too, so
+# with it the checks would measure QEMU, not the firmware's default.
+_DEVICE = {
+    "std-vga": "VGA,edid=off",
+    "virtio-gpu": "virtio-gpu-pci",
+    "bochs-display": "bochs-display,edid=off",
+}
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
 _PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
@@ -79,9 +86,14 @@ class Guest:
             f"unix:{self.monitor_path},server=on,wait=off",
         ]
         self._stderr = self.stderr_path.open("wb")
-        self.proc = subprocess.Popen(  # noqa: S603 - argv is ours
-            full, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr
-        )
+        try:
+            self.proc = subprocess.Popen(  # noqa: S603 - argv is ours
+                full, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr
+            )
+        except OSError as err:
+            self._stderr.close()
+            msg = f"{name}: cannot start {argv[0]}: {err.strerror}"
+            raise BootError(msg) from err
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
 
@@ -195,16 +207,25 @@ class Guest:
             raise BootError(msg) from None
 
     def close(self) -> None:
-        """Stop QEMU if it is still running."""
-        if self.proc.poll() is None:
-            try:
-                self.monitor("quit")
-                self.proc.wait(10)
-            except (OSError, subprocess.TimeoutExpired):
+        """Stop QEMU if it is still running: asked to quit, else killed.
+
+        Whatever the monitor does, QEMU is reaped and its files closed.
+        """
+        try:
+            if self.proc.poll() is None:
+                with contextlib.suppress(BootError, subprocess.TimeoutExpired):
+                    self.monitor("quit")
+                    self.proc.wait(10)
+        finally:
+            if self.proc.poll() is None:
                 self.proc.kill()
-                self.proc.wait()
-        self._reader.join(10)
-        self._stderr.close()
+            self.proc.wait()
+            self._reader.join(10)
+            for f in (self.proc.stdin, self.proc.stdout):
+                if f is not None:
+                    with contextlib.suppress(OSError):
+                        f.close()
+            self._stderr.close()
 
 
 @dataclass
@@ -231,9 +252,27 @@ def _kvm() -> bool:
     return os.access("/dev/kvm", os.R_OK | os.W_OK)
 
 
+def qemu_binary(arch: str) -> str:
+    """The QEMU system emulator arch's images boot in."""
+    return "qemu-system-x86_64" if arch == "x64" else "qemu-system-aarch64"
+
+
+def missing_qemu(qemu_dir: Path | None, arches: tuple[str, ...]) -> list[str]:
+    """Each QEMU the boots of arches need and cannot find, said."""
+    problems: list[str] = []
+    for arch in arches:
+        binary = qemu_binary(arch)
+        if qemu_dir:
+            if not os.access(qemu_dir / binary, os.X_OK):
+                problems.append(f"{qemu_dir}: no executable {binary} (QEMU_DIR, or --qemu-dir)")
+        elif not shutil.which(binary):
+            problems.append(f"{binary} not found on PATH (or set QEMU_DIR)")
+    return problems
+
+
 def qemu_argv(qemu_dir: Path | None, s: ImageSet, vars_copy: Path, esp: Path, cpu: str = AARCH64_CPU) -> list[str]:
     """The QEMU command line shared by every boot of s (cpu: AARCH64's)."""
-    binary = "qemu-system-x86_64" if s.arch == "x64" else "qemu-system-aarch64"
+    binary = qemu_binary(s.arch)
     exe = str(qemu_dir / binary) if qemu_dir else (shutil.which(binary) or binary)
     if s.arch == "x64":
         machine = ["-machine", "q35", *(["-accel", "kvm", "-cpu", "host"] if _kvm() else ["-accel", "tcg", "-cpu", "max"])]
@@ -315,8 +354,12 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
         modes: dict[str, object] = {}
         result.facts["text_modes"] = modes
 
-        def attempt(name: str, extra: list[str], body: Callable[[Guest], None]) -> None:
-            g = Guest([*base, *extra], workdir, Path(socks), f"{tag}-{name}", timeout)
+        def attempt(name: str, extra: list[str], body: Callable[[Guest], None], argv: list[str] | None = None) -> None:
+            try:
+                g = Guest([*(argv or base), *extra], workdir, Path(socks), f"{tag}-{name}", timeout)
+            except BootError as err:
+                result.problems.append(f"{s.arch} {s.flavour}: {err}")
+                return
             try:
                 body(g)
             except BootError as err:
@@ -424,15 +467,17 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
             cpus: dict[str, bool] = {}
             result.facts["cpu_models_reach_shell"] = cpus
             for cpu in AARCH64_CPUS:
-                g = Guest(qemu_argv(qemu_dir, s, vars_copy, esp, cpu), workdir, Path(socks), f"{tag}-cpu-{cpu}", timeout)
-                try:
-                    g.prompt()
+                cpus[cpu] = False
+
+                def reaches_shell(g: Guest, cpu: str = cpu) -> None:
+                    try:
+                        g.prompt()
+                    except BootError as err:
+                        msg = f"under -cpu {cpu}: {err}"
+                        raise BootError(msg) from err
                     cpus[cpu] = True
-                except BootError as err:
-                    cpus[cpu] = False
-                    result.problems.append(f"{s.arch} {s.flavour}: under -cpu {cpu}: {err}")
-                finally:
-                    g.close()
+
+                attempt(f"cpu-{cpu}", [], reaches_shell, qemu_argv(qemu_dir, s, vars_copy, esp, cpu))
     for shape in SHAPES:
         if shape not in modes:
             result.problems.append(f"{s.arch} {s.flavour}: no text modes measured for {shape}")

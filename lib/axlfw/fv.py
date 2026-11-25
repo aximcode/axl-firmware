@@ -9,7 +9,7 @@ does not start at offset 0, so the volumes are found here by their
 
 Checked against axl-sdk's ``fwtool list`` on edk2-stable202602's OVMF and
 ArmVirtQemu, QEMU 10.0.0's bundled images and AlmaLinux's: the same file
-GUIDs on every one (README.md, "The firmware-volume walker").
+GUIDs on every one (docs/DESIGN.md §4.15 and §6).
 """
 
 from __future__ import annotations

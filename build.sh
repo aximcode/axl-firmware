@@ -2,7 +2,7 @@
 # axl-firmware: prebuilt UEFI firmware for QEMU (OVMF for X64 q35, ArmVirtQemu
 # for AARCH64 virt), built from a pinned edk2 stable tag with QEMU's own
 # build flags and this repository's patches, checked, and packed as a
-# release. See README.md.
+# release. See README.md and docs/DESIGN.md.
 #
 #   build.sh build [--edk2 DIR] [--install] [--prefix DIR]
 #       Build both arches in both flavours (DEBUG, RELEASE), check every
@@ -55,7 +55,7 @@ revision=1
 release="$tag-r$revision"
 repo=aximcode/axl-firmware
 
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 prog=build.sh
 
 die() {
@@ -70,6 +70,7 @@ usage: $prog build [--edk2 DIR] [--install] [--prefix DIR]
        $prog check <release-dir>
        $prog verify <x64|aarch64> <code-image>
        $prog check-source <dir>
+       $prog fetch
 EOF
     exit 2
 }
@@ -89,6 +90,20 @@ submodules() {
         awk '$2 !~ /^UnitTestFrameworkPkg\// { print $2 }'
 }
 
+# untracked <dir>: the files under dir that git does not track and the
+# tree's own .gitignore files do not ignore, in the tree and its
+# submodules, as "?? <path>". Neither the user's core.excludesFile nor
+# .git/info/exclude hides one.
+untracked() {
+    local top subs
+    top=$(git -C "$1" ls-files -o --exclude-per-directory=.gitignore) || return 1
+    # shellcheck disable=SC2016
+    subs=$(git -C "$1" submodule foreach --quiet --recursive \
+        'out=$(git ls-files -o --exclude-per-directory=.gitignore) || exit 1
+         [ -z "$out" ] || printf "%s\n" "$out" | sed "s|^|$displaypath/|"') || return 1
+    printf '%s\n%s\n' "$top" "$subs" | sed -n 's/^./?? &/p'
+}
+
 # source_ok <dir>: the tree is the pinned commit, as committed, with the
 # fix, and holds no file git would not account for.
 source_ok() {
@@ -105,20 +120,25 @@ source_ok() {
     fi
     # Entries marked assume-unchanged or skip-worktree (or sparse) are
     # hidden from git status: none may be.
-    hidden=$(
-        git -C "$d" ls-files -v | grep -v '^H '
-        # shellcheck disable=SC2016
-        git -C "$d" submodule foreach --quiet \
-            'git ls-files -v | sed -n "/^H /!s|^|$sm_path: |p"'
-    ) || return 1
+    hidden=$(git -C "$d" ls-files -v) || return 1
+    hidden=$(grep -v '^H ' <<<"$hidden") || hidden=""
+    # shellcheck disable=SC2016
+    sub=$(git -C "$d" submodule foreach --quiet \
+        'out=$(git ls-files -v) || exit 1
+         [ -z "$out" ] || printf "%s\n" "$out" | sed -n "/^H /!s|^|$sm_path: |p"') || return 1
+    hidden=$(printf '%s\n%s\n' "$hidden" "$sub" | grep .) || hidden=""
     if [[ -n "$hidden" ]]; then
         echo "$prog: $d: files hidden from git status:" >&2
         head -5 <<<"$hidden" >&2
         return 1
     fi
-    # Tracked files as committed, and no untracked file that is not
-    # ignored (a build's ignored output, Build/ or Conf/, is not read).
-    dirty=$(git -C "$d" status --porcelain --ignore-submodules=none) || return 1
+    # Tracked files as committed (a submodule with an untracked file shows
+    # here too, as modified), and no untracked file that the tree's
+    # .gitignore does not ignore (a build's ignored output, Build/ or
+    # Conf/, is not read).
+    dirty=$(git -C "$d" status --porcelain --untracked-files=no --ignore-submodules=none) || return 1
+    sub=$(untracked "$d") || return 1
+    dirty=$(printf '%s\n%s\n' "$dirty" "$sub" | grep .) || dirty=""
     if [[ -n "$dirty" ]]; then
         echo "$prog: $d: files changed or untracked:" >&2
         head -20 <<<"$dirty" >&2
@@ -143,10 +163,11 @@ source_ok() {
 # tree_state <dir>: what git says of every file, ignored ones included, in
 # the tree and its submodules; a build must leave it unchanged.
 tree_state() {
-    git -C "$1" status --porcelain --ignored --ignore-submodules=none
+    git -C "$1" status --porcelain --ignored --ignore-submodules=none || return 1
     # shellcheck disable=SC2016
     git -C "$1" submodule foreach --quiet --recursive \
-        'git status --porcelain --ignored | sed "s|^|$sm_path: |"'
+        'out=$(git status --porcelain --ignored) || exit 1
+         [ -z "$out" ] || printf "%s\n" "$out" | sed "s|^|$sm_path: |"' || return 1
 }
 
 # venv: a Python with requirements.txt's packages, kept in the cache by the
@@ -154,16 +175,37 @@ tree_state() {
 venv() {
     local cache want
     cache=$(xdg XDG_CACHE_HOME "$HOME/.cache")/axl-firmware
-    want=$(sha256sum "$here/requirements.txt" | cut -c1-16)
+    want=$(sha256sum "$here/requirements.txt") || die "cannot read $here/requirements.txt"
+    want=${want:0:16}
     py="$cache/venv-$want/bin/python"
     # .complete is written last: a venv without it was cut short.
     [[ -f "$cache/venv-$want/.complete" ]] && return
     mkdir -p "$cache"
-    rm -rf "$cache/venv-$want"
-    python3 -m venv "$cache/venv-$want"
-    "$py" -m pip install --quiet --disable-pip-version-check \
-        --require-hashes -r "$here/requirements.txt" || die "cannot install requirements.txt"
-    : >"$cache/venv-$want/.complete"
+    # One run makes it; another waits, then finds it complete.
+    # (errexit is off in a subshell tested by ||: each step says its failure.)
+    (
+        flock 7 || die "cannot lock $cache/.venv-$want.lock"
+        [[ ! -f "$cache/venv-$want/.complete" ]] || exit 0
+        rm -rf "$cache/venv-$want" || die "cannot remove $cache/venv-$want"
+        python3 -m venv "$cache/venv-$want" || die "python3 -m venv failed (python3-venv installed?)"
+        "$py" -m pip install --quiet --disable-pip-version-check \
+            --require-hashes -r "$here/requirements.txt" || die "cannot install requirements.txt"
+        : >"$cache/venv-$want/.complete" || die "cannot write $cache/venv-$want/.complete"
+    ) 7>"$cache/.venv-$want.lock" || exit 1
+}
+
+# repo_facts: this checkout's commit and how many files differ from it, as
+# the manifest records them; "none" and -1 when git cannot tell (no
+# checkout, or one git refuses for its ownership). Sets repo_commit and
+# repo_dirty.
+repo_facts() {
+    local st
+    repo_commit=$(git -C "$here" rev-parse HEAD 2>/dev/null) || repo_commit=none
+    if st=$(git -C "$here" status --porcelain 2>/dev/null); then
+        repo_dirty=$(grep -c . <<<"$st") || repo_dirty=0
+    else
+        repo_dirty=-1
+    fi
 }
 
 # axlfw <python> <args...>: the lib/axlfw package's command line (its
@@ -173,6 +215,9 @@ axlfw() {
     shift
     "$python" -E -s "$here/lib/axlfw-run.py" "$@"
 }
+
+# Sourced (by the tests): the functions above, and nothing run.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
 case "${1:-}" in
     verify)
@@ -243,7 +288,21 @@ aa64_gcc="${aa64_prefix}gcc"
 for tool in git flock; do
     command -v "$tool" >/dev/null || die "$tool not found on PATH"
 done
+
+cache=$(xdg XDG_CACHE_HOME "$HOME/.cache")/axl-firmware/edk2
+work="$here/work"
+mkdir -p "$cache" "$work"
+# One build at a time per checkout, and per cache.
+exec 8>"$work/.lock"
+if ! flock -n 8; then
+    echo "$prog: another build holds $work/.lock; waiting" >&2
+    flock 8
+fi
+
 if [[ $fetch_only == 0 ]]; then
+    # An earlier build's release goes first: a build that fails leaves none
+    # that would look like its own.
+    rm -f "$here"/dist/axl-firmware-* "$here/dist/SHA256SUMS"
     for tool in python3 make gcc nasm iasl truncate sha256sum xz "$aa64_gcc"; do
         command -v "$tool" >/dev/null || die "$tool not found on PATH"
     done
@@ -259,23 +318,16 @@ if [[ $fetch_only == 0 ]]; then
     printf '#include <uuid/uuid.h>\n' | gcc -E - >/dev/null 2>&1 ||
         die "libuuid's headers (uuid/uuid.h) not found: install libuuid-devel or uuid-dev"
     venv
-fi
-
-cache=$(xdg XDG_CACHE_HOME "$HOME/.cache")/axl-firmware/edk2
-work="$here/work"
-mkdir -p "$cache" "$work"
-# One build at a time per checkout, and per cache.
-exec 8>"$work/.lock"
-if ! flock -n 8; then
-    echo "$prog: another build holds $work/.lock; waiting" >&2
-    flock 8
+    x64_cc=$(gcc -dumpfullversion) || die "gcc -dumpfullversion failed"
+    aa64_cc=$("$aa64_gcc" -dumpfullversion) || die "$aa64_gcc -dumpfullversion failed"
+    repo_facts
 fi
 
 fetch_tmp=""
 trap '[[ -z "$fetch_tmp" ]] || { chmod -R u+w "$fetch_tmp"; rm -rf "$fetch_tmp"; }' EXIT
 
 fetch_source() {
-    fetch_tmp=$(mktemp -d "$cache/.$tag.XXXXXX")
+    fetch_tmp=$(mktemp -d "$cache/.$tag.XXXXXX") || die "cannot make a directory in $cache"
     local t="$fetch_tmp/edk2"
     if [[ -n "${EDK2_SRC:-}" ]]; then
         git -C "$EDK2_SRC" rev-parse --git-dir >/dev/null ||
@@ -326,7 +378,7 @@ if [[ $fetch_only == 1 ]]; then
     echo "$src: $tag at $commit, as committed"
     exit
 fi
-before=$(tree_state "$src")
+before=$(tree_state "$src") || die "cannot read what git says of $src"
 touch "$work/.source-stamp"
 
 # QEMU's roms/edk2-build.config (v10.0.0), [opts.common]: every image.
@@ -366,7 +418,8 @@ toolchain=GCC
 flavours=(DEBUG RELEASE)
 # The firmware's version (SMBIOS type 0's BIOS version) is the tag, and its
 # date the commit's, as QEMU's roms/Makefile passes them.
-release_date=$(git -C "$src" log -1 --pretty=format:%cd --date=format:%m/%d/%Y "$commit")
+release_date=$(git -C "$src" log -1 --pretty=format:%cd --date=format:%m/%d/%Y "$commit") ||
+    die "cannot read the date of $commit in $src"
 
 # The workspace: BaseTools copied in and built there; the packages the
 # patches touch copied and patched; Conf and Build of its own.
@@ -386,6 +439,8 @@ copy_tracked() {
 }
 copy_tracked "$ws" BaseTools
 mapfile -t patches < <(find "$here/patches" -maxdepth 1 -name '*.patch' | LC_ALL=C sort)
+# (A process substitution's failure is not seen: an empty list is.)
+((${#patches[@]} > 0)) || die "no patches found in $here/patches"
 mapfile -t patched_pkgs < <(
     for p in "${patches[@]}"; do
         sed -n 's|^+++ b/\([^/]*\)/.*|\1|p' "$p"
@@ -408,7 +463,8 @@ done
     export GCC_AARCH64_PREFIX="$aa64_prefix"
     # edk2's build stamps its output with SOURCE_DATE_EPOCH when set: the
     # pinned commit's date, so that the time of the build is not in it.
-    SOURCE_DATE_EPOCH=$(git -C "$src" log -1 --pretty=format:%ct "$commit")
+    SOURCE_DATE_EPOCH=$(git -C "$src" log -1 --pretty=format:%ct "$commit") ||
+        die "cannot read the date of $commit in $src"
     export SOURCE_DATE_EPOCH
     # BaseTools' C reads MdePkg's headers from EDK2_PATH (by default the
     # copy's ../../..): the source's, read only. Serially: VfrCompile's
@@ -457,7 +513,7 @@ done
     done
 )
 
-after=$(tree_state "$src")
+after=$(tree_state "$src") || die "cannot read what git says of $src"
 if [[ "$before" != "$after" ]]; then
     diff <(echo "$before") <(echo "$after") >&2 || true
     die "the build changed the source tree $src (above)"
@@ -465,9 +521,10 @@ fi
 # git collapses an ignored directory to one line and never sees a change
 # inside it (a Build/ or Conf/ of the tree's own): any file or directory
 # modified since the stamp, outside .git, is a write.
-touched=$(find "$src" -path '*/.git' -prune -o -newer "$work/.source-stamp" -print | head -20)
+touched=$(find "$src" -path '*/.git' -prune -o -newer "$work/.source-stamp" -print) ||
+    die "cannot read all of $src to check that nothing was written into it"
 if [[ -n "$touched" ]]; then
-    echo "$touched" >&2
+    head -20 <<<"$touched" >&2
     die "the build wrote into the source tree $src (above)"
 fi
 echo "+ the source tree is as it was: nothing written into $src"
@@ -478,12 +535,10 @@ built_by=local
 args=(assemble --ws "$ws" --src "$src" --dist "$here/dist" --stage "$work/stage"
     --release "$release" --tag "$tag" --commit "$commit" --url "$url"
     --toolchain "$toolchain" --release-date "$release_date"
-    --compiler "x64=gcc $(gcc -dumpfullversion)"
-    --compiler "aarch64=$aa64_gcc $("$aa64_gcc" -dumpfullversion)"
+    --compiler "x64=gcc $x64_cc" --compiler "aarch64=$aa64_gcc $aa64_cc"
     --defines "x64=${common_opts[*]}" --defines "aarch64=${common_opts[*]} ${aa64_opts[*]}"
     --pcds "x64=${common_pcds[*]}" --pcds "aarch64=${common_pcds[*]} ${aa64_pcds[*]}"
-    --repo-commit "$(git -C "$here" rev-parse HEAD 2>/dev/null || echo none)"
-    --repo-dirty "$(git -C "$here" status --porcelain 2>/dev/null | wc -l)"
+    --repo-commit "$repo_commit" --repo-dirty "$repo_dirty"
     --built-by "$built_by")
 for p in "${patches[@]}"; do
     args+=(--patch "$p")
