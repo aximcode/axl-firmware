@@ -24,8 +24,8 @@ permissions:
   contents: read
 
 env:
-  EDK2_TAG: edk2-stable202602
-  EDK2_COMMIT: b7a715f7c03c45c6b4575bf88596bfd79658b8ce
+  EDK2_TAG: edk2-stable202611
+  EDK2_COMMIT: 556dcfb466e9f05affeaff881d738807f8156d3c
 
 jobs:
   lint:

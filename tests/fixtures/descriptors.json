@@ -1,6 +1,6 @@
 {
-  "10-axl-firmware-edk2-stable202602-r1-x64.json": {
-    "description": "axl-firmware edk2-stable202602-r1 for X64 (q35), DEBUG, edk2 edk2-stable202602",
+  "10-axl-firmware-edk2-stable202611-r1-x64.json": {
+    "description": "axl-firmware edk2-stable202611-r1 for X64 (q35), DEBUG, edk2 edk2-stable202611",
     "interface-types": [
       "uefi"
     ],
@@ -8,11 +8,11 @@
       "device": "flash",
       "mode": "split",
       "executable": {
-        "filename": "/p/edk2-stable202602-r1/x64/code.fd",
+        "filename": "/p/edk2-stable202611-r1/x64/code.fd",
         "format": "raw"
       },
       "nvram-template": {
-        "filename": "/p/edk2-stable202602-r1/x64/vars.fd",
+        "filename": "/p/edk2-stable202611-r1/x64/vars.fd",
         "format": "raw"
       }
     },
@@ -31,14 +31,14 @@
       "verbose-dynamic"
     ],
     "tags": [
-      "edk2-stable202602",
-      "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
-      "edk2-stable202602-r1",
+      "edk2-stable202611",
+      "556dcfb466e9f05affeaff881d738807f8156d3c",
+      "edk2-stable202611-r1",
       "DEBUG"
     ]
   },
-  "10-axl-firmware-edk2-stable202602-r1-aarch64.json": {
-    "description": "axl-firmware edk2-stable202602-r1 for AARCH64 (virt), DEBUG, edk2 edk2-stable202602",
+  "10-axl-firmware-edk2-stable202611-r1-aarch64.json": {
+    "description": "axl-firmware edk2-stable202611-r1 for AARCH64 (virt), DEBUG, edk2 edk2-stable202611",
     "interface-types": [
       "uefi"
     ],
@@ -46,11 +46,11 @@
       "device": "flash",
       "mode": "split",
       "executable": {
-        "filename": "/p/edk2-stable202602-r1/aarch64/code.fd",
+        "filename": "/p/edk2-stable202611-r1/aarch64/code.fd",
         "format": "raw"
       },
       "nvram-template": {
-        "filename": "/p/edk2-stable202602-r1/aarch64/vars.fd",
+        "filename": "/p/edk2-stable202611-r1/aarch64/vars.fd",
         "format": "raw"
       }
     },
@@ -66,14 +66,14 @@
       "verbose-static"
     ],
     "tags": [
-      "edk2-stable202602",
-      "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
-      "edk2-stable202602-r1",
+      "edk2-stable202611",
+      "556dcfb466e9f05affeaff881d738807f8156d3c",
+      "edk2-stable202611-r1",
       "DEBUG"
     ]
   },
-  "20-axl-firmware-edk2-stable202602-r1-release-x64.json": {
-    "description": "axl-firmware edk2-stable202602-r1 for X64 (q35), RELEASE, edk2 edk2-stable202602",
+  "20-axl-firmware-edk2-stable202611-r1-release-x64.json": {
+    "description": "axl-firmware edk2-stable202611-r1 for X64 (q35), RELEASE, edk2 edk2-stable202611",
     "interface-types": [
       "uefi"
     ],
@@ -81,11 +81,11 @@
       "device": "flash",
       "mode": "split",
       "executable": {
-        "filename": "/p/edk2-stable202602-r1/release/x64/code.fd",
+        "filename": "/p/edk2-stable202611-r1/release/x64/code.fd",
         "format": "raw"
       },
       "nvram-template": {
-        "filename": "/p/edk2-stable202602-r1/release/x64/vars.fd",
+        "filename": "/p/edk2-stable202611-r1/release/x64/vars.fd",
         "format": "raw"
       }
     },
@@ -103,14 +103,14 @@
       "amd-sev-es"
     ],
     "tags": [
-      "edk2-stable202602",
-      "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
-      "edk2-stable202602-r1",
+      "edk2-stable202611",
+      "556dcfb466e9f05affeaff881d738807f8156d3c",
+      "edk2-stable202611-r1",
       "RELEASE"
     ]
   },
-  "20-axl-firmware-edk2-stable202602-r1-release-aarch64.json": {
-    "description": "axl-firmware edk2-stable202602-r1 for AARCH64 (virt), RELEASE, edk2 edk2-stable202602",
+  "20-axl-firmware-edk2-stable202611-r1-release-aarch64.json": {
+    "description": "axl-firmware edk2-stable202611-r1 for AARCH64 (virt), RELEASE, edk2 edk2-stable202611",
     "interface-types": [
       "uefi"
     ],
@@ -118,11 +118,11 @@
       "device": "flash",
       "mode": "split",
       "executable": {
-        "filename": "/p/edk2-stable202602-r1/release/aarch64/code.fd",
+        "filename": "/p/edk2-stable202611-r1/release/aarch64/code.fd",
         "format": "raw"
       },
       "nvram-template": {
-        "filename": "/p/edk2-stable202602-r1/release/aarch64/vars.fd",
+        "filename": "/p/edk2-stable202611-r1/release/aarch64/vars.fd",
         "format": "raw"
       }
     },
@@ -136,9 +136,9 @@
     ],
     "features": [],
     "tags": [
-      "edk2-stable202602",
-      "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
-      "edk2-stable202602-r1",
+      "edk2-stable202611",
+      "556dcfb466e9f05affeaff881d738807f8156d3c",
+      "edk2-stable202611-r1",
       "RELEASE"
     ]
   }

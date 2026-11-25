@@ -381,7 +381,7 @@ def assemble(a: AssembleArgs) -> int:
             "tag": a.tag,
             "commit": a.commit,
             "url": a.url,
-            "fixes": [a.fix],
+            "fixes": a.fixes,
             "patches": [{"name": p.name, "sha256": sha256(p)} for p in a.patches],
         },
         "flags_from": FLAGS_FROM,
@@ -417,7 +417,7 @@ class AssembleArgs:
     tag: str
     commit: str
     url: str
-    fix: str
+    fixes: list[str]
     toolchain: str
     release_date: str
     compilers: dict[str, str]

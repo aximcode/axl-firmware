@@ -177,10 +177,12 @@ def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object]
     bds = _module_dir(build, arch, "MdeModulePkg/Universal/BdsDxe/BdsDxe")
     pcds = module_pcds(dxe)
     menu = module_pcds(bds).get("PcdBootManagerMenuFile", "")
-    if "PcdDebugPropertyMask" not in pcds or "PcdDebugPrintErrorLevel" not in pcds:
+    # A RELEASE build may link a DebugLib that references neither PCD
+    # (ArmVirtQemu's does): then there is nothing to read, and none needed.
+    if flavour == "DEBUG" and ("PcdDebugPropertyMask" not in pcds or "PcdDebugPrintErrorLevel" not in pcds):
         return {}, [f"{dxe}: no AutoGen with the debug PCDs"]
-    mask = int(pcds["PcdDebugPropertyMask"], 0)
-    level = int(pcds["PcdDebugPrintErrorLevel"], 0)
+    mask = int(pcds["PcdDebugPropertyMask"], 0) if "PcdDebugPropertyMask" in pcds else None
+    level = int(pcds["PcdDebugPrintErrorLevel"], 0) if "PcdDebugPrintErrorLevel" in pcds else None
     # The module's makefile: GNUmakefile with GCC (BaseTools' GenMake).
     makefile = dxe.parent / "GNUmakefile"
     if not makefile.is_file():
@@ -189,8 +191,8 @@ def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object]
     facts: dict[str, object] = {
         "target": flavour,
         "asserts_compiled": not ndebug,
-        "property_mask": f"{mask:#04x}",
-        "print_error_level": f"{level:#010x}",
+        "property_mask": None if mask is None else f"{mask:#04x}",
+        "print_error_level": None if level is None else f"{level:#010x}",
         "boot_manager_menu": "UiApp" if menu == _guid_bytes(UIAPP) else menu,
     }
     if menu != _guid_bytes(UIAPP):
@@ -203,6 +205,7 @@ def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object]
         return facts, problems
     if ndebug:
         problems.append(f"{makefile}: a DEBUG build with MDEPKG_NDEBUG")
+    assert mask is not None and level is not None  # DEBUG: required above
     if level != PRINT_LEVEL[arch]:
         problems.append(f"{dxe}: PcdDebugPrintErrorLevel {level:#010x}, not {PRINT_LEVEL[arch]:#010x}")
     if arch == "x64":

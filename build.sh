@@ -17,6 +17,9 @@
 #       Only the FV check of one image: exit 0, or 1 naming what is wrong.
 #   build.sh check-source <dir>
 #       Only check an edk2 tree as a build checks its source.
+#   build.sh fetch
+#       Only fetch the pinned source into the cache (below), or check the
+#       cache there.
 #
 # The edk2 source is, by default, fetched once into
 #   ${XDG_CACHE_HOME:-~/.cache}/axl-firmware/edk2/<tag>
@@ -37,11 +40,16 @@
 # JOBS (default 4) jobs.
 set -euo pipefail
 
-tag="edk2-stable202602"
-commit=b7a715f7c03c45c6b4575bf88596bfd79658b8ce
+tag="edk2-stable202611"
+commit=556dcfb466e9f05affeaff881d738807f8156d3c
 url=https://github.com/tianocore/edk2.git
-# "OvmfPkg/VirtioRngDxe: protect VirtioRngGetRNG against timer callbacks".
-fix=8ba02634ecaa6ff5d0edcea266198f42eca90c53
+# The fixes every build must hold, each an ancestor of the pin:
+#  - 8ba02634 "OvmfPkg/VirtioRngDxe: protect VirtioRngGetRNG against timer
+#    callbacks" (boots could stall);
+#  - b8df7d9c "ArmVirtPkg/ArmPlatformLibQemu: Support early ID map on LPA2
+#    capable CPUs" (edk2 issue #11962: AARCH64 hung after its banner on a
+#    CPU with FEAT_LPA2, such as QEMU's -cpu max, from 202511 to 202602).
+fixes=(8ba02634ecaa6ff5d0edcea266198f42eca90c53 b8df7d9c8e1e370b862890ebda677278c4c6155f)
 # This repository's release of that tag: the release tag is <tag>-r<N>.
 revision=1
 release="$tag-r$revision"
@@ -123,10 +131,13 @@ source_ok() {
         grep -v '^ ' <<<"$sub" >&2
         return 1
     fi
-    if ! git -C "$d" merge-base --is-ancestor "$fix" HEAD; then
-        echo "$prog: $d: lacks the VirtioRng fix $fix" >&2
-        return 1
-    fi
+    local f
+    for f in "${fixes[@]}"; do
+        if ! git -C "$d" merge-base --is-ancestor "$f" HEAD; then
+            echo "$prog: $d: lacks the fix $f" >&2
+            return 1
+        fi
+    done
 }
 
 # tree_state <dir>: what git says of every file, ignored ones included, in
@@ -195,9 +206,15 @@ case "${1:-}" in
         exit
         ;;
     build) shift ;;
+    fetch)
+        (($# == 1)) || usage
+        fetch_only=1
+        shift
+        ;;
     *) usage ;;
 esac
 
+fetch_only=${fetch_only:-0}
 edk2="" install=0 prefix=""
 while (($#)); do
     case "$1" in
@@ -223,21 +240,26 @@ jobs=${JOBS:-4}
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive number, not '$jobs'"
 aa64_prefix=${GCC_AARCH64_PREFIX:-aarch64-linux-gnu-}
 aa64_gcc="${aa64_prefix}gcc"
-for tool in git python3 make gcc nasm iasl flock truncate sha256sum xz "$aa64_gcc"; do
+for tool in git flock; do
     command -v "$tool" >/dev/null || die "$tool not found on PATH"
 done
-for q in qemu-system-x86_64 qemu-system-aarch64; do
-    if [[ -n "${QEMU_DIR:-}" ]]; then
-        [[ -x "$QEMU_DIR/$q" ]] || die "QEMU_DIR=$QEMU_DIR has no $q"
-    else
-        command -v "$q" >/dev/null || die "$q not found on PATH (or set QEMU_DIR)"
-    fi
-done
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' ||
-    die "python3 is $(python3 -V 2>&1); 3.9 or later is needed"
-printf '#include <uuid/uuid.h>\n' | gcc -E - >/dev/null 2>&1 ||
-    die "libuuid's headers (uuid/uuid.h) not found: install libuuid-devel or uuid-dev"
-venv
+if [[ $fetch_only == 0 ]]; then
+    for tool in python3 make gcc nasm iasl truncate sha256sum xz "$aa64_gcc"; do
+        command -v "$tool" >/dev/null || die "$tool not found on PATH"
+    done
+    for q in qemu-system-x86_64 qemu-system-aarch64; do
+        if [[ -n "${QEMU_DIR:-}" ]]; then
+            [[ -x "$QEMU_DIR/$q" ]] || die "QEMU_DIR=$QEMU_DIR has no $q"
+        else
+            command -v "$q" >/dev/null || die "$q not found on PATH (or set QEMU_DIR)"
+        fi
+    done
+    python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' ||
+        die "python3 is $(python3 -V 2>&1); 3.9 or later is needed"
+    printf '#include <uuid/uuid.h>\n' | gcc -E - >/dev/null 2>&1 ||
+        die "libuuid's headers (uuid/uuid.h) not found: install libuuid-devel or uuid-dev"
+    venv
+fi
 
 cache=$(xdg XDG_CACHE_HOME "$HOME/.cache")/axl-firmware/edk2
 work="$here/work"
@@ -293,12 +315,16 @@ else
         echo "$prog: another run holds $cache/.$tag.lock; waiting" >&2
         flock 9
     fi
-    if source_ok "$src"; then
+    if [[ -e "$src" ]] && source_ok "$src"; then
         echo "+ reusing the edk2 cache $src"
     else
         [[ ! -e "$src" ]] || echo "$prog: the edk2 cache $src does not check out; fetching again" >&2
         fetch_source
     fi
+fi
+if [[ $fetch_only == 1 ]]; then
+    echo "$src: $tag at $commit, as committed"
+    exit
 fi
 before=$(tree_state "$src")
 touch "$work/.source-stamp"
@@ -443,7 +469,7 @@ echo "+ the source tree is as it was: nothing written into $src"
 built_by=local
 [[ -z "${GITHUB_ACTIONS:-}" ]] || built_by="github-actions ${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 args=(assemble --ws "$ws" --src "$src" --dist "$here/dist" --stage "$work/stage"
-    --release "$release" --tag "$tag" --commit "$commit" --url "$url" --fix "$fix"
+    --release "$release" --tag "$tag" --commit "$commit" --url "$url"
     --toolchain "$toolchain" --release-date "$release_date"
     --compiler "x64=gcc $(gcc -dumpfullversion)"
     --compiler "aarch64=$aa64_gcc $("$aa64_gcc" -dumpfullversion)"
@@ -454,6 +480,9 @@ args=(assemble --ws "$ws" --src "$src" --dist "$here/dist" --stage "$work/stage"
     --built-by "$built_by")
 for p in "${patches[@]}"; do
     args+=(--patch "$p")
+done
+for f in "${fixes[@]}"; do
+    args+=(--fix "$f")
 done
 [[ -z "${QEMU_DIR:-}" ]] || args+=(--qemu-dir "$QEMU_DIR")
 axlfw "$py" "${args[@]}"

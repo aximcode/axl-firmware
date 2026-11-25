@@ -15,15 +15,15 @@ VGA) gets a GOP. Two changes make it work there:
    display whose attribute controller was never unblanked; x86 builds
    are unchanged.
 
-axl-firmware's patch against edk2-stable202602, applied after
+axl-firmware's patch against edk2-stable202611, applied after
 0001-pointer-drivers.patch to a copy of the packages it touches.
 
 ---
 diff --git a/ArmVirtPkg/ArmVirtQemu.dsc b/ArmVirtPkg/ArmVirtQemu.dsc
-index a38a1d8..8d753ad 100644
+index 8efe121..bf27866 100644
 --- a/ArmVirtPkg/ArmVirtQemu.dsc
 +++ b/ArmVirtPkg/ArmVirtQemu.dsc
-@@ -154,6 +154,10 @@
+@@ -150,6 +150,10 @@
    #  It could be set FALSE to save size.
    gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|TRUE
  
@@ -34,7 +34,7 @@ index a38a1d8..8d753ad 100644
    gEfiMdeModulePkgTokenSpaceGuid.PcdTurnOffUsbLegacySupport|TRUE
  
    gArmVirtTokenSpaceGuid.PcdTpm2SupportEnabled|$(TPM2_ENABLE)
-@@ -577,6 +581,7 @@
+@@ -412,6 +416,7 @@
    # Video support
    #
    OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
@@ -43,10 +43,10 @@ index a38a1d8..8d753ad 100644
    OvmfPkg/PlatformDxe/Platform.inf
  
 diff --git a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
-index 37dc68e..7eb1884 100644
+index 243e931..6379116 100644
 --- a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
 +++ b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
-@@ -167,6 +167,7 @@ READ_LOCK_STATUS   = TRUE
+@@ -189,6 +189,7 @@ READ_LOCK_STATUS   = TRUE
    # Video support
    #
    INF OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf

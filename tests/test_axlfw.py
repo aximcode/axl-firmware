@@ -175,6 +175,30 @@ class BuildFactsTests(unittest.TestCase):
                 checks.build_facts(b, "x64", "RELEASE"), ({}, [f"{mk}: missing, so the build's flags cannot be read"])
             )
 
+    def test_release_without_debug_pcds(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(Path(t), "RELEASE", "aarch64", "0x2F", "0x80000000", UIAPP_BYTES, ndebug=True)
+            (b / "AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG/AutoGen.c").write_text("/* DebugLibNull */\n")
+            self.assertEqual(
+                checks.build_facts(b, "aarch64", "RELEASE"),
+                (
+                    {
+                        "target": "RELEASE",
+                        "asserts_compiled": False,
+                        "property_mask": None,
+                        "print_error_level": None,
+                        "boot_manager_menu": "UiApp",
+                    },
+                    [],
+                ),
+            )
+            debug = b.parent / "DEBUG_GCC5"
+            b.rename(debug)
+            self.assertEqual(
+                checks.build_facts(debug, "aarch64", "DEBUG"),
+                ({}, [f"{debug / 'AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG'}: no AutoGen with the debug PCDs"]),
+            )
+
     def test_flavour_swapped(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             b = _build(Path(t), "RELEASE", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=True)
@@ -189,10 +213,10 @@ class DescriptorTests(unittest.TestCase):
     """The descriptors, exactly."""
 
     def test_each(self) -> None:
-        tag, commit, rel = "edk2-stable202602", "b7a715f7c03c45c6b4575bf88596bfd79658b8ce", "edk2-stable202602-r1"
+        tag, commit, rel = "edk2-stable202611", "556dcfb466e9f05affeaff881d738807f8156d3c", "edk2-stable202611-r1"
         want = json.loads((FIXTURES / "descriptors.json").read_text())
         got = {
-            img.descriptor(rel): release.descriptor(img, rel, tag, commit, "/p/edk2-stable202602-r1/")
+            img.descriptor(rel): release.descriptor(img, rel, tag, commit, "/p/edk2-stable202611-r1/")
             for img in release.IMAGES
         }
         self.assertEqual(got, want)
@@ -250,7 +274,7 @@ def _fake_release(
     root: Path, rel: str, corrupt: bool = False, fmt: int = 2, outside: bool = False, asset: str | None = None
 ) -> Path:
     """A small release tarball shaped as a real one, and its SHA256SUMS."""
-    tag, commit = "edk2-stable202602", "b7a715f7c03c45c6b4575bf88596bfd79658b8ce"
+    tag, commit = "edk2-stable202611", "556dcfb466e9f05affeaff881d738807f8156d3c"
     stage = Path(tempfile.mkdtemp(dir=root, prefix=f"stage-{rel}-"))
     top = stage / f"axl-firmware-{rel}"
     images: dict[str, object] = {}
@@ -307,9 +331,9 @@ class InstallTests(unittest.TestCase):
         return sorted(p.name for p in (self.prefix / "descriptors").iterdir())
 
     def test_install_and_upgrade(self) -> None:
-        r1 = _fake_release(self.root, "edk2-stable202602-r1")
+        r1 = _fake_release(self.root, "edk2-stable202611-r1")
         install.install("o/r", str(r1), self.prefix, None, symbols=False)
-        rel = "edk2-stable202602-r1"
+        rel = "edk2-stable202611-r1"
         self.assertEqual(
             self._descriptors(),
             [
@@ -323,23 +347,23 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(
             got,
             release.descriptor(
-                release.Image("x64", "RELEASE"), rel, "edk2-stable202602",
-                "b7a715f7c03c45c6b4575bf88596bfd79658b8ce", f"{self.prefix.resolve()}/{rel}/",
+                release.Image("x64", "RELEASE"), rel, "edk2-stable202611",
+                "556dcfb466e9f05affeaff881d738807f8156d3c", f"{self.prefix.resolve()}/{rel}/",
             ),
         )
         self.assertEqual((self.prefix / rel / "release/x64/code.fd").read_bytes(), f"{rel} release/x64 code.fd".encode())
         # Another release: its descriptors replace these; r1's files stay.
         unrelated = self.prefix / "descriptors" / "50-other.json"
         unrelated.write_text("{}")
-        r2 = _fake_release(self.root, "edk2-stable202602-r2")
+        r2 = _fake_release(self.root, "edk2-stable202611-r2")
         install.install("o/r", str(r2), self.prefix, None, symbols=False)
         self.assertEqual(
             self._descriptors(),
             [
-                "10-axl-firmware-edk2-stable202602-r2-aarch64.json",
-                "10-axl-firmware-edk2-stable202602-r2-x64.json",
-                "20-axl-firmware-edk2-stable202602-r2-release-aarch64.json",
-                "20-axl-firmware-edk2-stable202602-r2-release-x64.json",
+                "10-axl-firmware-edk2-stable202611-r2-aarch64.json",
+                "10-axl-firmware-edk2-stable202611-r2-x64.json",
+                "20-axl-firmware-edk2-stable202611-r2-release-aarch64.json",
+                "20-axl-firmware-edk2-stable202611-r2-release-x64.json",
                 "50-other.json",
             ],
         )
@@ -347,10 +371,10 @@ class InstallTests(unittest.TestCase):
         # The same release again replaces its directory whole.
         install.install("o/r", str(r2), self.prefix, None, symbols=False)
         self.assertEqual(sorted(p.name for p in self.prefix.iterdir()), sorted(
-            [".lock", "descriptors", "edk2-stable202602-r1", "edk2-stable202602-r2"]))
+            [".lock", "descriptors", "edk2-stable202611-r1", "edk2-stable202611-r2"]))
 
     def test_wrong_digest(self) -> None:
-        r1 = _fake_release(self.root, "edk2-stable202602-r1")
+        r1 = _fake_release(self.root, "edk2-stable202611-r1")
         got = hashlib.sha256(r1.read_bytes()).hexdigest()
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(r1), self.prefix, "0" * 64, symbols=False)
@@ -359,14 +383,14 @@ class InstallTests(unittest.TestCase):
         install.install("o/r", str(r1), self.prefix, got, symbols=False)
 
     def test_refusals_leave_the_install_as_it_was(self) -> None:
-        r1 = _fake_release(self.root, "edk2-stable202602-r1")
+        r1 = _fake_release(self.root, "edk2-stable202611-r1")
         install.install("o/r", str(r1), self.prefix, None, symbols=False)
         before = sorted(str(p.relative_to(self.prefix)) for p in self.prefix.rglob("*"))
-        top = "axl-firmware-edk2-stable202602-r1"
+        top = "axl-firmware-edk2-stable202611-r1"
         cases = {
-            "format": (_fake_release(self.root, "edk2-stable202602-r1", fmt=1),
+            "format": (_fake_release(self.root, "edk2-stable202611-r1", fmt=1),
                        f"manifest format 1; this install reads format 2"),
-            "outside": (_fake_release(self.root, "edk2-stable202602-r1", outside=True),
+            "outside": (_fake_release(self.root, "edk2-stable202611-r1", outside=True),
                         "the manifest names '../../etc/passwd', outside the release"),
         }
         for label, (tarball, tail) in cases.items():
@@ -379,7 +403,7 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(after, before)
 
     def test_bad_release_name(self) -> None:
-        bad = _fake_release(self.root, "edk2-stable202602-r1", asset="axl-firmware-...tar.xz")
+        bad = _fake_release(self.root, "edk2-stable202611-r1", asset="axl-firmware-...tar.xz")
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(bad), self.prefix, None, symbols=False)
         self.assertEqual(
@@ -388,23 +412,23 @@ class InstallTests(unittest.TestCase):
         )
 
     def test_no_sums(self) -> None:
-        r1 = _fake_release(self.root, "edk2-stable202602-r1")
+        r1 = _fake_release(self.root, "edk2-stable202611-r1")
         (r1.parent / "SHA256SUMS").unlink()
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(r1), self.prefix, None, symbols=False)
         self.assertEqual(str(cm.exception), f"{r1}: no SHA256SUMS beside it; give its sha256 with --sha256")
 
     def test_corrupt_set(self) -> None:
-        r1 = _fake_release(self.root, "edk2-stable202602-r1", corrupt=True)
+        r1 = _fake_release(self.root, "edk2-stable202611-r1", corrupt=True)
         with self.assertRaises(install.InstallError) as cm:
             install.install("o/r", str(r1), self.prefix, None, symbols=False)
-        self.assertRegex(str(cm.exception), r"/axl-firmware-edk2-stable202602-r1/x64/code\.fd: not x64's code as its manifest records it$")
+        self.assertRegex(str(cm.exception), r"/axl-firmware-edk2-stable202611-r1/x64/code\.fd: not x64's code as its manifest records it$")
         self.assertEqual(os.listdir(self.prefix), [".lock"])
 
     def test_member_outside(self) -> None:
-        for name in ("../escape", "axl-firmware-edk2-stable202602-r9/../../escape", "elsewhere/file"):
+        for name in ("../escape", "axl-firmware-edk2-stable202611-r9/../../escape", "elsewhere/file"):
             with self.subTest(name):
-                bad = self.root / "axl-firmware-edk2-stable202602-r9.tar.xz"
+                bad = self.root / "axl-firmware-edk2-stable202611-r9.tar.xz"
                 with tarfile.open(bad, "w:xz") as tar:
                     tar.addfile(tarfile.TarInfo(name))
                 digest = hashlib.sha256(bad.read_bytes()).hexdigest()

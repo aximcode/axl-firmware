@@ -22,8 +22,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 here=$PWD
 script=$here/build.sh
-tag=edk2-stable202602
-commit=b7a715f7c03c45c6b4575bf88596bfd79658b8ce
+tag=edk2-stable202611
+commit=556dcfb466e9f05affeaff881d738807f8156d3c
 tmp=$(mktemp -d)
 copy=""
 trap 'rm -rf "$tmp"; [[ -z "$copy" ]] || { chmod -R u+w "$copy"; rm -rf "$copy"; }' EXIT

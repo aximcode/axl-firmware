@@ -32,12 +32,13 @@ def main(argv: list[str]) -> int:
     a = sub.add_parser("assemble", help="stage, check and pack a finished build")
     for name in ("ws", "src", "dist", "stage"):
         a.add_argument(f"--{name}", type=Path, required=True)
-    for name in ("release", "tag", "commit", "url", "fix", "toolchain", "release-date", "repo-commit", "built-by"):
+    for name in ("release", "tag", "commit", "url", "toolchain", "release-date", "repo-commit", "built-by"):
         a.add_argument(f"--{name}", required=True)
     a.add_argument("--repo-dirty", type=int, required=True)
     for name in ("compiler", "defines", "pcds"):
         a.add_argument(f"--{name}", action="append", default=[])
     a.add_argument("--patch", type=Path, action="append", default=[])
+    a.add_argument("--fix", action="append", default=[])
     a.add_argument("--qemu-dir", type=Path)
 
     c = sub.add_parser("check", help="re-check an unpacked release")
@@ -93,7 +94,7 @@ def main(argv: list[str]) -> int:
             tag=args.tag,
             commit=args.commit,
             url=args.url,
-            fix=args.fix,
+            fixes=args.fix,
             toolchain=args.toolchain,
             release_date=args.release_date,
             compilers=_pairs(args.compiler),

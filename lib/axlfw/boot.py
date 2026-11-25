@@ -36,6 +36,11 @@ NV_GUID = "7f1e3a52-6b0d-4c8e-9a27-5d4b1c3e2f60"
 NV_NAME = "AxlFirmwareNvCheck"
 GOP_DEFAULT = (1280, 800)
 SHAPES = ("serial", "std-vga", "virtio-gpu", "bochs-display")
+# AARCH64's CPU for the boots: axlvmpool's default. Each of AARCH64_CPUS must
+# reach the Shell too: `max` has FEAT_LPA2, on which edk2 202511 to 202602
+# hung after its banner (edk2 issue #11962, fixed by b8df7d9c).
+AARCH64_CPU = "cortex-a57"
+AARCH64_CPUS = ("max", "cortex-a57", "neoverse-v1")
 _DEVICE = {"std-vga": "VGA", "virtio-gpu": "virtio-gpu-pci", "bochs-display": "bochs-display"}
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
@@ -223,14 +228,14 @@ def _kvm() -> bool:
     return os.access("/dev/kvm", os.R_OK | os.W_OK)
 
 
-def qemu_argv(qemu_dir: Path | None, s: ImageSet, vars_copy: Path, esp: Path) -> list[str]:
-    """The QEMU command line shared by every boot of s."""
+def qemu_argv(qemu_dir: Path | None, s: ImageSet, vars_copy: Path, esp: Path, cpu: str = AARCH64_CPU) -> list[str]:
+    """The QEMU command line shared by every boot of s (cpu: AARCH64's)."""
     binary = "qemu-system-x86_64" if s.arch == "x64" else "qemu-system-aarch64"
     exe = str(qemu_dir / binary) if qemu_dir else (shutil.which(binary) or binary)
     if s.arch == "x64":
         machine = ["-machine", "q35", *(["-accel", "kvm", "-cpu", "host"] if _kvm() else ["-accel", "tcg", "-cpu", "max"])]
     else:
-        machine = ["-machine", "virt", "-accel", "tcg", "-cpu", "cortex-a57"]
+        machine = ["-machine", "virt", "-accel", "tcg", "-cpu", cpu]
     return [
         exe,
         *machine,
@@ -411,6 +416,20 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
                 )
 
         attempt("bochs-display", ["-device", _DEVICE["bochs-display"]], bochs)
+
+        if s.arch == "aarch64":
+            cpus: dict[str, bool] = {}
+            result.facts["cpu_models_reach_shell"] = cpus
+            for cpu in AARCH64_CPUS:
+                g = Guest(qemu_argv(qemu_dir, s, vars_copy, esp, cpu), workdir, Path(socks), f"{tag}-cpu-{cpu}", timeout)
+                try:
+                    g.prompt()
+                    cpus[cpu] = True
+                except BootError as err:
+                    cpus[cpu] = False
+                    result.problems.append(f"{s.arch} {s.flavour}: under -cpu {cpu}: {err}")
+                finally:
+                    g.close()
     for shape in SHAPES:
         if shape not in modes:
             result.problems.append(f"{s.arch} {s.flavour}: no text modes measured for {shape}")
