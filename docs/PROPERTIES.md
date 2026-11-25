@@ -68,7 +68,7 @@ noted.
 | source-stamp | a file written where git cannot see it, only the stamp guard active | 45654296317 | `the build wrote into the source tree` |
 | patch 0003 removed (control) | 202611 without 0003 | 45644063120 | AARCH64 DEBUG with two PL011s: `no Shell prompt within 180 s`, `0 bytes on the second UART` |
 | licence derivation | on the r2 build's own workspace (local, AlmaLinux 10 x86_64), `release.image_licenses` with one INF mapping dropped at a time (`inf_sources` without its entries under `openssl/`, `libfdt/`, `libtl/`); control: unchanged, no problem | local | dropped `openssl/`: on all four, `LICENSES/CryptoPkg_Library_OpensslLib_openssl/LICENSE.txt is not listed, but its part is compiled into the image`; `libfdt/`: both AARCH64 sets, its `BSD-2-Clause` and `GPL`; `libtl/`: both AARCH64 sets, its three files |
-| VolInfo cross-check | on the r2 build's own workspace (local, AlmaLinux 10 x86_64), `release.volinfo_checks` with VolInfo's set short of one GUID (`volinfo.parse` patched to drop VirtioFsDxe's); control: unchanged, no problem | local | (see the r2 report) |
+| VolInfo cross-check | on the r2 build's own workspace (local, AlmaLinux 10 x86_64), `release.volinfo_checks` with VolInfo's set short of one GUID (`volinfo.parse` patched to drop VirtioFsDxe's); control: unchanged, no problem | local | on all four, `<dir>/code.fd: the FV walker finds files VolInfo does not: 7BD9DDF7-8B83-488E-AEC9-24C78610289C`; the control passed (X64 150 GUIDs, AARCH64 123, both readings) |
 | `-cpu max` (control) | the 202602 AARCH64 image (no LPA2 fix) | local, AlmaLinux 10 x86_64, QEMU 10.0.0 | no Shell within 60 s under `max`; reaches the Shell under `cortex-a57` |
 
 Unit-level sabotages (each check's code broken in turn, RED shown, restored by

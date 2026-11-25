@@ -425,8 +425,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       (`OvmfPkg/Include/Dsc/NetworkComponents.dsc.inc`) as 3 bytes in
       some builds and as the DEC default `"yes"`'s 4 in others, a race in
       edk2's parallel AutoGen. RELEASE's IScsiDxe flipped between the two
-      builds *without* `-y` (and the second matched the `-y` builds'
-      `code.fd`); DEBUG's came out one way with `-y` and the other
+      builds *without* `-y` (and the second matched the first r2
+      build's `code.fd`), and between the two r2 builds, both with `-y`; DEBUG's came out one way with `-y` and the other
       without, twice each. The value is `"no"` either way, so the
       behaviour is the same. So X64 at this tag is reproducible except
       for that one module (§5.2); AARCH64 not at all.
