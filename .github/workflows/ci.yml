@@ -17,6 +17,8 @@ on:
     branches: [main]
     tags: ["edk2-stable*-r*"]
   pull_request:
+  # By hand, on any branch: the sabotage runs (docs/PROPERTIES.md).
+  workflow_dispatch:
 
 permissions:
   contents: read

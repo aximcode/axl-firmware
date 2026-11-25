@@ -208,6 +208,26 @@ class BootParseTests(unittest.TestCase):
         self.assertEqual(boot.hex_bytes("dmpstore: No matching variables found.\n"), "")
 
 
+class SymbolsTests(unittest.TestCase):
+    """The symbols check."""
+
+    def test_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            (d / "FV").mkdir()
+            for name in release.SYMBOLS_REQUIRED:
+                (d / name).write_bytes(b"\x7fELF" + b"\0" * 12)
+            (d / "FV" / "DXEFV.Fv.map").write_text("map\n")
+            self.assertEqual(release.check_symbols(d), [])
+            (d / "Shell.debug").write_bytes(b"MZ")
+            (d / "DxeCore.debug").unlink()
+            (d / "FV" / "DXEFV.Fv.map").unlink()
+            self.assertEqual(
+                release.check_symbols(d),
+                [f"{d}: no DxeCore.debug", f"{d / 'Shell.debug'}: not an ELF file", f"{d}/FV: no firmware-volume maps"],
+            )
+
+
 def _fake_release(root: Path, rel: str, corrupt: bool = False) -> Path:
     """A small release tarball shaped as a real one, and its SHA256SUMS."""
     tag, commit = "edk2-stable202602", "b7a715f7c03c45c6b4575bf88596bfd79658b8ce"

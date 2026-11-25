@@ -195,6 +195,24 @@ def licenses(src: Path, ws: Path, stage: Path) -> list[str]:
     return copied
 
 
+# The symbols a debugger needs first: the DXE core, BDS and the Shell.
+SYMBOLS_REQUIRED = ("DxeCore.debug", "BdsDxe.debug", "Shell.debug")
+
+
+def check_symbols(dest: Path) -> list[str]:
+    """An arch's symbols: the core modules' ELF .debug files and FV maps."""
+    problems: list[str] = []
+    for name in SYMBOLS_REQUIRED:
+        f = dest / name
+        if not f.is_file():
+            problems.append(f"{dest}: no {name}")
+        elif f.read_bytes()[:4] != b"\x7fELF":
+            problems.append(f"{f}: not an ELF file")
+    if not list((dest / "FV").glob("*.Fv.map")):
+        problems.append(f"{dest}/FV: no firmware-volume maps")
+    return problems
+
+
 def static_checks(stage: Path) -> tuple[dict[str, dict[str, object]], list[str]]:
     """The image and Shell checks of every image set in stage."""
     verified: dict[str, dict[str, object]] = {}
@@ -329,6 +347,10 @@ def assemble(a: AssembleArgs) -> int:
             shutil.copyfile(f, dest / f.name)
         for f in sorted((b / "FV").glob("*.Fv.map")):
             shutil.copyfile(f, dest / "FV" / f.name)
+        problems = check_symbols(dest)
+        if problems:
+            print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
+            return 1
         name = f"axl-firmware-{rel}-symbols-{arch}.tar.xz"
         _tar(a.dist / name, sroot, f"axl-firmware-{rel}-symbols-{arch}", epoch)
         symbols[arch] = name

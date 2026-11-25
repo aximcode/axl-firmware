@@ -374,9 +374,11 @@ done
     export CONF_PATH="$ws/Conf" PYTHON_COMMAND=python3 PYTHONHASHSEED=1
     export GCC5_AARCH64_PREFIX="$aa64_prefix" GCC_AARCH64_PREFIX="$aa64_prefix"
     # BaseTools' C reads MdePkg's headers from EDK2_PATH (by default the
-    # copy's ../../..): the source's, read only.
+    # copy's ../../..): the source's, read only. Serially: VfrCompile's
+    # generated parser races its own compile under -j (seen in CI as
+    # "EfiVfrParser.cpp: expected initializer at end of input").
     echo "+ make -C BaseTools (the workspace's copy) EDK2_PATH=$src"
-    nice -n 19 make -C BaseTools -j "$jobs" EDK2_PATH="$src" >"$ws/build-BaseTools.log" 2>&1 || {
+    nice -n 19 make -C BaseTools EDK2_PATH="$src" >"$ws/build-BaseTools.log" 2>&1 || {
         tail -40 "$ws/build-BaseTools.log" >&2
         die "the BaseTools build failed (log: $ws/build-BaseTools.log)"
     }
