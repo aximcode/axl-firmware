@@ -23,8 +23,9 @@ git clone git@github.com:aximcode/axl-firmware.git && cd axl-firmware
 ./build.sh install --from edk2-stable202611-r1
 ```
 
-The repository is private, so the download uses `gh` (logged in) or
-`GITHUB_TOKEN`. The install verifies the tarball's sha256 against the release's
+The repository is public: the download needs no login. It uses `gh` when it is
+installed and logged in, the REST API with `GITHUB_TOKEN` when that is set, and
+otherwise the plain release URL (`https://github.com/aximcode/axl-firmware/releases/download/<tag>/<asset>`). The install verifies the tarball's sha256 against the release's
 `SHA256SUMS` (or `--sha256 <hex>`, to pin it yourself), then writes:
 
 ```

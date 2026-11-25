@@ -6,8 +6,9 @@
 
 <prefix> is $XDG_DATA_HOME/axl-firmware by default. The release comes from
 a local tarball (its sha256 from --sha256, or from SHA256SUMS beside it) or
-by release tag from GitHub (`gh release download`, or the REST API with
-GITHUB_TOKEN; the repository is private), its sha256 from the release's
+by release tag from GitHub (`gh release download` when logged in, the REST API
+with GITHUB_TOKEN when set, else the public release URL), its sha256 from the
+release's
 SHA256SUMS or --sha256.
 
 Every file is written beside its place and renamed in. The release's
@@ -29,6 +30,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import cast
@@ -157,12 +159,17 @@ def download(repo: str, tag: str, names: list[str], dest: Path) -> None:
         if r.returncode == 0:
             return
         if not os.environ.get("GITHUB_TOKEN"):
-            msg = f"gh release download {tag} -R {repo} failed: {r.stderr.strip()}"
-            raise InstallError(msg)
+            # gh not logged in, say: a public release needs no login.
+            try:
+                _download_public(repo, tag, names, dest)
+            except InstallError as e:
+                msg = f"gh release download {tag} -R {repo} failed: {r.stderr.strip()}; {e}"
+                raise InstallError(msg) from e
+            return
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
-        msg = f"cannot fetch {repo} {tag}: install gh (and `gh auth login`) or set GITHUB_TOKEN"
-        raise InstallError(msg)
+        _download_public(repo, tag, names, dest)
+        return
     with urllib.request.urlopen(  # noqa: S310
         _api(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", token, "application/vnd.github+json"),
         timeout=60,
@@ -176,6 +183,31 @@ def download(repo: str, tag: str, names: list[str], dest: Path) -> None:
         with urllib.request.urlopen(_api(assets[n], token, "application/octet-stream"), timeout=600) as resp:  # noqa: S310
             with (dest / n).open("wb") as out:
                 shutil.copyfileobj(resp, out)
+
+
+def _download_public(repo: str, tag: str, names: list[str], dest: Path) -> None:
+    """Fetch a public release's assets by their plain download URLs, no token.
+
+    Nothing is trusted here: the caller verifies every file's sha256.
+    """
+    for n in names:
+        url = f"https://github.com/{repo}/releases/download/{tag}/{n}"
+        req = urllib.request.Request(  # noqa: S310 - https only
+            url, headers={"Accept": "application/octet-stream", "User-Agent": "axl-firmware-install"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:  # noqa: S310
+                with (dest / n).open("wb") as out:
+                    shutil.copyfileobj(resp, out)
+        except urllib.error.HTTPError as e:
+            msg = (
+                f"cannot fetch {repo} {tag} {n}: HTTP {e.code} from {url} "
+                "(a private repository needs gh, logged in, or GITHUB_TOKEN)"
+            )
+            raise InstallError(msg) from e
+        except (urllib.error.URLError, OSError) as e:
+            msg = f"cannot fetch {repo} {tag} {n} from {url}: {e}"
+            raise InstallError(msg) from e
 
 
 def _verify(path: Path, sha: str | None, shown: Path) -> None:

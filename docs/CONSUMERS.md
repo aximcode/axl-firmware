@@ -50,8 +50,12 @@ rust-osdev's ovmf-prebuilt does:
 
 Without `--sha256`, the install trusts the release's own `SHA256SUMS`. With a
 tarball already on disk, `--from <path>` checks it against `SHA256SUMS` beside it
-or `--sha256`. The repository is private: the download uses `gh release download`
-(logged in) or the REST API with `GITHUB_TOKEN`.
+or `--sha256`. The repository is public, so a release downloads with no login from
+`https://github.com/aximcode/axl-firmware/releases/download/<tag>/<asset>`; the
+install uses `gh release download` when it is logged in, or the REST API with
+`GITHUB_TOKEN` when that is set, and the plain URL otherwise. Every file is
+checked against the release's `SHA256SUMS` (or a pinned `--sha256`), which is
+the trust anchor, not the transport.
 
 A consumer with its own fetcher reads the same three things: the asset
 `axl-firmware-<release>.tar.xz`, its sha256, and the layout in

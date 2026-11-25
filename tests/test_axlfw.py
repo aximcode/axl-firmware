@@ -7,6 +7,7 @@ Run by tests/firmware-tests.sh with the build's venv (uefi_firmware):
 from __future__ import annotations
 
 import contextlib
+import email.message
 import hashlib
 import io
 import json
@@ -18,6 +19,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from unittest import mock
 from pathlib import Path
@@ -682,6 +685,87 @@ class InstallTests(unittest.TestCase):
             install.install("o/r", "latest", self.prefix, None, symbols=False)
         self.assertEqual(
             str(cm.exception), "--from latest: no such file, and not a release tag (edk2-stableYYYYMM-rN)"
+        )
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+class DownloadTests(unittest.TestCase):
+    """Fetching a release's assets by tag."""
+
+    def setUp(self) -> None:
+        self.seen: list[urllib.request.Request] = []
+        self.dest = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dest)
+
+    def _urlopen(self, req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
+        self.seen.append(req)
+        url = req.full_url
+        if url.endswith("/releases/tags/t1"):
+            return _FakeResponse(json.dumps({"assets": [{"name": "a.tar.xz", "url": "https://api.github.com/x/1"}]}).encode())
+        if url.endswith("/a.tar.xz") or url == "https://api.github.com/x/1":
+            return _FakeResponse(b"asset bytes")
+        raise urllib.error.HTTPError(url, 404, "Not Found", email.message.Message(), None)
+
+    def _download(self, env: dict[str, str]) -> None:
+        with (
+            mock.patch.object(install.shutil, "which", return_value=None),
+            mock.patch.dict(os.environ, env, clear=False),
+            mock.patch.object(install.urllib.request, "urlopen", side_effect=self._urlopen),
+        ):
+            if "GITHUB_TOKEN" not in env:
+                os.environ.pop("GITHUB_TOKEN", None)
+            install.download("o/r", "t1", ["a.tar.xz"], self.dest)
+
+    def test_public_release_without_gh_or_token(self) -> None:
+        self._download({})
+        self.assertEqual((self.dest / "a.tar.xz").read_bytes(), b"asset bytes")
+        self.assertEqual(
+            [(r.full_url, r.get_header("Authorization")) for r in self.seen],
+            [("https://github.com/o/r/releases/download/t1/a.tar.xz", None)],
+        )
+
+    def test_public_release_missing_asset(self) -> None:
+        with self.assertRaises(install.InstallError) as e:
+            with (
+                mock.patch.object(install.shutil, "which", return_value=None),
+                mock.patch.object(install.urllib.request, "urlopen", side_effect=self._urlopen),
+            ):
+                os.environ.pop("GITHUB_TOKEN", None)
+                install.download("o/r", "t1", ["missing.tar.xz"], self.dest)
+        self.assertEqual(
+            str(e.exception),
+            "cannot fetch o/r t1 missing.tar.xz: HTTP 404 from "
+            "https://github.com/o/r/releases/download/t1/missing.tar.xz "
+            "(a private repository needs gh, logged in, or GITHUB_TOKEN)",
+        )
+
+    def test_gh_not_logged_in_falls_back_to_the_public_url(self) -> None:
+        failed = subprocess.CompletedProcess[str](args=[], returncode=4, stdout="", stderr="gh auth login")
+        with (
+            mock.patch.object(install.shutil, "which", return_value="/usr/bin/gh"),
+            mock.patch.object(install.subprocess, "run", return_value=failed),
+            mock.patch.object(install.urllib.request, "urlopen", side_effect=self._urlopen),
+        ):
+            os.environ.pop("GITHUB_TOKEN", None)
+            install.download("o/r", "t1", ["a.tar.xz"], self.dest)
+        self.assertEqual((self.dest / "a.tar.xz").read_bytes(), b"asset bytes")
+        self.assertEqual(
+            [r.full_url for r in self.seen], ["https://github.com/o/r/releases/download/t1/a.tar.xz"]
+        )
+
+    def test_token_uses_the_api(self) -> None:
+        self._download({"GITHUB_TOKEN": "tok"})
+        self.assertEqual((self.dest / "a.tar.xz").read_bytes(), b"asset bytes")
+        self.assertEqual(
+            [r.full_url for r in self.seen],
+            ["https://api.github.com/repos/o/r/releases/tags/t1", "https://api.github.com/x/1"],
         )
 
 

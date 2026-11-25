@@ -172,7 +172,7 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    BIOS version reads `edk2-stable202611` on both arches, which a downstream
    project reports. It replaces axlvmpool's `edk2-stable202602-for-axlvmpool`.
 10. **Prebuilt, in its own repository** (owner, 2026-11-25): this repository,
-    private on GitHub, with CI on GitHub-hosted `ubuntu-latest` (keeping the
+    on GitHub (private at first; **public from 2026-11-25**, decision 20), with CI on GitHub-hosted `ubuntu-latest` (keeping the
     load off the developers' hosts). Releases are tagged `<edk2 tag>-r<N>`.
 11. **One shared edk2 tree, out of tree** (owner, 2026-11-25): firmware builds
     use edk2's out-of-tree build (`WORKSPACE` for output, `PACKAGES_PATH` for
@@ -242,6 +242,22 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     (BUILDING.md). Every release checks it: the AARCH64 serial boot runs with
     two PL011s, must reach the Shell, and the second UART must carry
     errors-only DEBUG output (PROPERTIES.md; RED on the unpatched build).
+20. **Public, with releases here** (owner, 2026-11-25, after consulting the
+    consumers). Private releases need a token, which axl-sdk's installer
+    (plain curl plus a pinned sha256, no token support) and a downstream
+    project's users behind a TLS-intercepting proxy do not have. Publishing the
+    firmware into the public `axl-sdk-releases` instead was weighed and
+    rejected: by default GitHub makes the newest release "Latest", and the SDK's
+    documented install (`…/axl-sdk-releases/releases/latest/download/install.sh`)
+    and its release checks read Latest, so one firmware release without
+    `make_latest: false` would break every new SDK install; a firmware tag there
+    would also point at an SDK snapshot commit, making GitHub's source archive
+    the SDK's. Here, Latest means the newest firmware, the source archive is
+    this repository's, and no cross-repository write token is needed. Before
+    the change the history, the release and the CI artifacts were audited: no
+    host names, home paths, LAN IPs or vendor names; the release records only
+    its CI run, commit and compilers. The install now falls back to the plain
+    release URL with no login (sha256 is the trust anchor).
 
 ## 5. Open decisions (the owner's)
 
