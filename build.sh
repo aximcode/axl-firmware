@@ -359,7 +359,10 @@ common_pcds=(
     PcdSetupVideoHorizontalResolution=640
     PcdSetupVideoVerticalResolution=480
 )
-toolchain=GCC5
+# edk2's GCC toolchain tag. QEMU 10.0.0's config says GCC5, which
+# edk2-stable202611's tools_def removed (3.06: "Remove GCC48, GCC49 and
+# GCC5"); GCC is its successor.
+toolchain=GCC
 flavours=(DEBUG RELEASE)
 # The firmware's version (SMBIOS type 0's BIOS version) is the tag, and its
 # date the commit's, as QEMU's roms/Makefile passes them.
@@ -402,7 +405,11 @@ done
     cd "$ws"
     export WORKSPACE="$ws" PACKAGES_PATH="$ws/overlay:$src" EDK_TOOLS_PATH="$ws/BaseTools"
     export CONF_PATH="$ws/Conf" PYTHON_COMMAND=python3 PYTHONHASHSEED=1
-    export GCC5_AARCH64_PREFIX="$aa64_prefix" GCC_AARCH64_PREFIX="$aa64_prefix"
+    export GCC_AARCH64_PREFIX="$aa64_prefix"
+    # edk2's build stamps its output with SOURCE_DATE_EPOCH when set: the
+    # pinned commit's date, so that the time of the build is not in it.
+    SOURCE_DATE_EPOCH=$(git -C "$src" log -1 --pretty=format:%ct "$commit")
+    export SOURCE_DATE_EPOCH
     # BaseTools' C reads MdePkg's headers from EDK2_PATH (by default the
     # copy's ../../..): the source's, read only. Serially: VfrCompile's
     # generated parser races its own compile under -j (seen in CI as

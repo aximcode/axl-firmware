@@ -98,7 +98,7 @@ MENU_APP_BYTES = "0xbf,0x3e,0x7d,0xee,0x8a,0xc6,0xf6,0x4a,0x96,0xef,0x43,0xa4,0x
 
 
 def _build(root: Path, flavour: str, arch: str, mask: str, level: str, menu: str, ndebug: bool) -> Path:
-    b = root / f"{flavour}_GCC5"
+    b = root / f"{flavour}_GCC"
     a = "X64" if arch == "x64" else "AARCH64"
     dxe = b / a / "MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
     bds = b / a / "MdeModulePkg/Universal/BdsDxe/BdsDxe/DEBUG"
@@ -192,7 +192,7 @@ class BuildFactsTests(unittest.TestCase):
                     [],
                 ),
             )
-            debug = b.parent / "DEBUG_GCC5"
+            debug = b.parent / "DEBUG_GCC"
             b.rename(debug)
             self.assertEqual(
                 checks.build_facts(debug, "aarch64", "DEBUG"),
