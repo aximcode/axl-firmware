@@ -13,6 +13,7 @@ import io
 import json
 import lzma
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -283,6 +284,143 @@ class GuestCloseTests(unittest.TestCase):
             self.assertIsNotNone(g.proc.returncode)
             self.assertTrue(g._stderr.closed)  # pyright: ignore[reportPrivateUsage]
             self.assertFalse(g._reader.is_alive())  # pyright: ignore[reportPrivateUsage]
+
+
+class GuestStateTests(unittest.TestCase):
+    """A boot that stops: QEMU's state is kept, from its monitor."""
+
+    # HMP replies trimmed from QEMU 10.0.0's, behind an echo of the line.
+    REPLIES = {
+        "info status": "VM status: running\r\n",
+        "info registers -a": "CPU#0\r\nRIP=000000003eef87ec RFL=00000246\r\nCPU#1\r\nRIP=000000003eef8800\r\n",
+        "info virtio": (
+            "/machine/peripheral-anon/device[0]/virtio-backend [virtio-blk]\r\n"
+            "/machine/peripheral-anon/device[1]/virtio-backend [virtio-gpu]\r\n"
+        ),
+        "info virtio-status /machine/peripheral-anon/device[0]/virtio-backend": "  num_vqs:                 2\r\n",
+        "info virtio-status /machine/peripheral-anon/device[1]/virtio-backend": "  num_vqs:                 2\r\n",
+        "info virtio-queue-status /machine/peripheral-anon/device[0]/virtio-backend 0": (
+            "  last_avail_idx:       9\r\n    avail:        0x000000003e840400\r\n"
+            "    used:         0x000000003e841000\r\n"
+        ),
+        "info virtio-queue-status /machine/peripheral-anon/device[0]/virtio-backend 1": (
+            "  last_avail_idx:       0\r\n    avail:        0x0000000000000000\r\n"
+            "    used:         0x0000000000000000\r\n"
+        ),
+        "info virtio-queue-status /machine/peripheral-anon/device[1]/virtio-backend 0": (
+            "  used_idx:             173\r\n  last_avail_idx:       173\r\n"
+            "    avail:        0x000000003e84e400\r\n    used:         0x000000003e84f000\r\n"
+        ),
+        "info virtio-queue-status /machine/peripheral-anon/device[1]/virtio-backend 1": (
+            "  last_avail_idx:       0\r\n    avail:        0x000000003e850400\r\n"
+            "    used:         0x000000003e851000\r\n"
+        ),
+        "xp /1hx 0x3e840402": "000000003e840402: 0x0009\r\n",
+        "xp /1hx 0x3e841002": "000000003e841002: 0x0009\r\n",
+        "xp /1hx 0x3e84e402": "000000003e84e402: 0x00ae\r\n",
+        "xp /1hx 0x3e84f002": "000000003e84f002: 0x00ad\r\n",
+        "xp /1hx 0x3e850402": "000000003e850402: 0x0000\r\n",
+        "xp /1hx 0x3e851002": "000000003e851002: 0x0000\r\n",
+    }
+
+    def fake_monitor(self, line: str, timeout: float = 30) -> str:
+        self.assertEqual(timeout, boot.STATE_TIMEOUT)
+        return f"\x1b[Ki\x1b[K\x1b[D{line}\x1b[K\r\n{self.REPLIES[line]}(qemu) "
+
+    def test_kept_at_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            # A stand-in for QEMU that prints a banner and then nothing.
+            argv = [sys.executable, "-c", "import os, time; os.write(1, b'banner\\r\\n'); time.sleep(60)"]
+            g = boot.Guest(argv, Path(t), Path(t), "fake", 1)
+            self.addCleanup(g.close)
+            g.expect(re.compile("banner"), "banner", 30)
+            with mock.patch.object(g, "monitor", side_effect=self.fake_monitor), self.assertRaises(boot.BootError) as err:
+                g.expect(re.compile("Shell> "), "Shell prompt")
+            self.assertEqual(
+                str(err.exception),
+                f"fake: no Shell prompt within 1 s; console ends:\nbanner\n\n(QEMU's state when it was given up on: {t}/fake.monitor)",
+            )
+            gpu = "/machine/peripheral-anon/device[1]/virtio-backend"
+            blk = "/machine/peripheral-anon/device[0]/virtio-backend"
+            self.assertEqual(
+                (Path(t) / "fake.monitor").read_text(),
+                "### info status\nVM status: running\n"
+                "### info registers -a\nCPU#0\nRIP=000000003eef87ec RFL=00000246\nCPU#1\nRIP=000000003eef8800\n"
+                "### info registers -a\nCPU#0\nRIP=000000003eef87ec RFL=00000246\nCPU#1\nRIP=000000003eef8800\n"
+                f"### info virtio\n{blk} [virtio-blk]\n{gpu} [virtio-gpu]\n"
+                f"### info virtio-queue-status {blk} 0\n"
+                "  last_avail_idx:       9\n    avail:        0x000000003e840400\n    used:         0x000000003e841000\n"
+                "### xp /1hx 0x3e840402\n000000003e840402: 0x0009\n"
+                "### xp /1hx 0x3e841002\n000000003e841002: 0x0009\n"
+                f"### info virtio-queue-status {blk} 1\n"
+                "  last_avail_idx:       0\n    avail:        0x0000000000000000\n    used:         0x0000000000000000\n"
+                f"### info virtio-queue-status {gpu} 0\n"
+                "  used_idx:             173\n  last_avail_idx:       173\n"
+                "    avail:        0x000000003e84e400\n    used:         0x000000003e84f000\n"
+                "### xp /1hx 0x3e84e402\n000000003e84e402: 0x00ae\n"
+                "### xp /1hx 0x3e84f002\n000000003e84f002: 0x00ad\n"
+                f"### info virtio-queue-status {gpu} 1\n"
+                "  last_avail_idx:       0\n    avail:        0x000000003e850400\n    used:         0x000000003e851000\n"
+                "### xp /1hx 0x3e850402\n000000003e850402: 0x0000\n"
+                "### xp /1hx 0x3e851002\n000000003e851002: 0x0000\n",
+            )
+
+    def test_monitor_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+            g = boot.Guest(argv, Path(t), Path(t), "fake", 1)
+            self.addCleanup(g.close)
+            with (
+                mock.patch.object(g, "monitor", side_effect=boot.BootError("fake: the monitor failed")),
+                self.assertRaises(boot.BootError) as err,
+            ):
+                g.expect(re.compile("Shell> "), "Shell prompt")
+            self.assertEqual(
+                str(err.exception),
+                f"fake: no Shell prompt within 1 s; console ends:\n\n(QEMU's state when it was given up on: {t}/fake.monitor)",
+            )
+            self.assertEqual((Path(t) / "fake.monitor").read_text(), "### info status\nfake: the monitor failed\n")
+
+    def test_not_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = boot.Guest([sys.executable, "-c", "import time; time.sleep(60)"], Path(t), Path(t), "fake", 1)
+            self.addCleanup(g.close)
+            with (
+                mock.patch.object(g, "keep_state", side_effect=OSError(28, "No space left on device")),
+                self.assertRaises(boot.BootError) as err,
+            ):
+                g.expect(re.compile("Shell> "), "Shell prompt")
+            self.assertEqual(
+                str(err.exception),
+                "fake: no Shell prompt within 1 s; console ends:\n\n(QEMU's state not kept: [Errno 28] No space left on device)",
+            )
+
+    def test_exits_while_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = boot.Guest([sys.executable, "-c", "import time; time.sleep(60)"], Path(t), Path(t), "fake", 1)
+            self.addCleanup(g.close)
+
+            def gone(line: str, timeout: float = 30) -> str:
+                g.proc.kill()
+                g.proc.wait()
+                raise boot.BootError(f"fake: monitor `{line}`: gone")
+
+            with mock.patch.object(g, "monitor", side_effect=gone), self.assertRaises(boot.BootError) as err:
+                g.expect(re.compile("Shell> "), "Shell prompt")
+            self.assertEqual(
+                str(err.exception),
+                "fake: no Shell prompt within 1 s; console ends:\n\n"
+                f"(QEMU's state when it was given up on: {t}/fake.monitor)\nQEMU exited -9: ",
+            )
+
+    def test_not_when_qemu_exited(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = boot.Guest([sys.executable, "-c", "pass"], Path(t), Path(t), "fake", 5)
+            self.addCleanup(g.close)
+            with self.assertRaises(boot.BootError) as err:
+                g.expect(re.compile("Shell> "), "Shell prompt")
+            self.assertEqual(str(err.exception), "fake: no Shell prompt within 5 s; console ends:\n\nQEMU exited 0: ")
+            self.assertFalse((Path(t) / "fake.monitor").exists())
 
 
 # A stand-in for QEMU and the Shell: a prompt; `fs0:\ticks.nsh` prints a

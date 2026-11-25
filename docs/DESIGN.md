@@ -495,6 +495,41 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    first patch to change the Shell's behaviour rather than restore it.
    *Recommendation:* leave it unless a consumer needs serial Ctrl-S; no
    axl-sdk test checks a pause.
+7. **An intermittent virtio-gpu boot hang on CI** (raised 2026-11-25). The
+   r2 tag's run (45708268326, e99510e) failed two virtio-gpu boots, each
+   `no Shell prompt within 180 s`; the main run on the same commit
+   (45708237045) and earlier runs passed every boot. What is known, from the
+   transcripts and the artifact's file times: AARCH64 DEBUG stopped within
+   2 s of starting, after Tcg2's "Not Found" lines and before the first
+   console output, so while PlatformBootManagerBeforeConsole connects the
+   display (VirtioGpuDxe's first control-queue requests); X64 RELEASE (KVM)
+   stopped within 2 s, after the console's second mode set (160x42) and its
+   clear, before `BdsDxe: loading Boot0001`. The two hung boots overlapped
+   in time but started 28 s apart, on different image sets. Both windows
+   hold VirtioGpuDxe round trips, whose `VirtioFlush` polls the used ring
+   with no time limit; no other display hung. QEMU itself was alive: each
+   next boot started 180 s later, to the artifact's 2 s resolution, so the
+   monitor's `quit` was answered at once. No key had been sent (the check
+   types only after `Press ESC in`), so patch 0004 and the check's keys are
+   not involved, and the `ESC[=3h` the console reader leaves unstripped is
+   in every passing transcript too. QEMU's virtio-gpu device code is the
+   same in 10.0.0 and CI's 10.2.1 (`hw/display/virtio-gpu.c` and
+   `virtio-gpu-base.c` differ only in error plumbing and output names). Not
+   reproduced locally (AlmaLinux 10 x86_64): 30 X64 RELEASE boots on QEMU
+   10.0.0, and on Ubuntu 26.04's own QEMU 10.2.1+ds-1ubuntu3.3 (in a
+   container) 23 X64 RELEASE and 14 AARCH64 DEBUG boots, 14 of them on one
+   CPU; each reached the Shell in 2.6 to 4 s. Not known: whether the guest
+   was waiting on a request QEMU never took, on one QEMU answered, or
+   elsewhere. A boot given up on now keeps QEMU's state (`<boot>.monitor`:
+   the registers twice, and each virtio queue's indices as QEMU and the guest
+   left them), which tells those apart. *Recommendation:* re-run CI with the
+   record in place, and no retry meanwhile, since a retry would hide a real
+   hang in a release. If it recurs, the record says whom to report it to:
+   QEMU (or, under KVM, KVM's ioeventfd) for an avail index past QEMU's
+   `last_avail_idx`; QEMU for a request it took (`inuse` above 0) but never
+   put in the used ring; edk2 for VirtioGpuDxe waiting on a request already
+   answered (the guest's used index equal to its avail index), or a vCPU
+   elsewhere.
 
 ## 6. Assumptions
 
@@ -519,6 +554,10 @@ Verified:
   `cortex-a57` reached it in 11 s; the same image is the CPU check's control).
   Cause and fix: §4.1. The other boot checks use `cortex-a57`, axlvmpool's
   default.
+- *GitHub-hosted runners expose KVM.* The r2 runs' build jobs, on the image
+  `ubuntu-latest` was then (ubuntu-26.04, 20261116.202.1), listed
+  `crw-rw-rw- ... /dev/kvm` after the udev rule, so X64 booted under KVM; a
+  later image may differ.
 - *GitHub's runners run steps with SIGPIPE ignored.* Run 45708237045's
   no-build tests failed on `tr: write error: Broken pipe` from a `tr | awk`
   whose awk exits early; a tr killed by SIGPIPE says nothing. So no script
@@ -530,8 +569,6 @@ Verified:
 
 To verify:
 
-- *GitHub-hosted runners expose KVM.* The CI enables `/dev/kvm` when present;
-  otherwise X64 boots under TCG, which is slower but equivalent.
 - *The Shell's `mode`, `dmpstore` and `smbiosview` output formats* are those of
   ShellPkg's at the pin (`STR_MODE_LIST_ITEM` and so on); a new tag must be
   re-checked ([BUILDING.md](BUILDING.md), "Moving to a new edk2 tag").

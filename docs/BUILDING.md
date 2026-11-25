@@ -69,7 +69,10 @@ Steps, in order:
 5. **Assemble** (`lib/axlfw/release.py`): stage the images (AARCH64's padded to
    64 MiB), run the static checks, then the boot checks (two image sets at a
    time, `AXLFW_BOOT_JOBS`; each `expect` waits up to `AXLFW_BOOT_TIMEOUT`,
-   180 s by default; console transcripts in `work/stage/boot-logs/`), write the
+   180 s by default; console transcripts in `work/stage/boot-logs/`, with,
+   for any `expect` given up on while QEMU still ran, its state from the monitor as
+   `<boot>.monitor`: registers, and each virtio queue as QEMU and the guest
+   left it), write the
    licences, descriptors and manifest, and pack `dist/`. Any failed check stops
    it before anything is packed. [PROPERTIES.md](PROPERTIES.md) lists the checks.
 

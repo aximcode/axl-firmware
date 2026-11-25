@@ -74,6 +74,9 @@ TICKS = (
     "endfor\r\n"
     "echo ticks done\r\n"
 )
+# The longest keep_state waits on one monitor command: a wedged monitor costs
+# a boot given up on this much more, then close()'s own wait.
+STATE_TIMEOUT = 5.0
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
 _PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
@@ -82,6 +85,14 @@ _MODE = re.compile(r"Col\s+(\d+)\s+Row\s+(\d+)\s+(\*?)")
 
 class BootError(Exception):
     """A boot did not do what the check needed: said with its transcript."""
+
+
+def _hmp_reply(raw: str) -> str:
+    """An HMP reply without the monitor's echo of the line (the first line,
+    drawn with cursor moves), its CRs or the next prompt."""
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw).replace("\r", "")
+    text = text.removesuffix("(qemu) ")
+    return text.split("\n", 1)[1] if "\n" in text else ""
 
 
 class Guest:
@@ -145,12 +156,65 @@ class Guest:
                 left = deadline - time.monotonic()
                 if left <= 0 or (self.proc.poll() is not None and not self._reader.is_alive()):
                     tail = self._text[-600:]
-                    if self.proc.poll() is not None:
-                        err = self.stderr_path.read_text(errors="replace").strip()
-                        tail += f"\nQEMU exited {self.proc.returncode}: {err}"
-                    msg = f"{self.name}: no {what} within {timeout or self.timeout:.0f} s; console ends:\n{tail}"
-                    raise BootError(msg)
+                    break
                 self._cond.wait(min(left, 0.5))
+        # Outside the lock: the reader goes on while the monitor is asked.
+        # The record never replaces the BootError, and a QEMU that exits
+        # while it is taken is still said.
+        if self.proc.poll() is None:
+            try:
+                tail += f"\n(QEMU's state when it was given up on: {self.keep_state()})"
+            except OSError as err:
+                tail += f"\n(QEMU's state not kept: {err})"
+        if self.proc.poll() is not None:
+            err = self.stderr_path.read_text(errors="replace").strip()
+            tail += f"\nQEMU exited {self.proc.returncode}: {err}"
+        msg = f"{self.name}: no {what} within {timeout or self.timeout:.0f} s; console ends:\n{tail}"
+        raise BootError(msg)
+
+    def keep_state(self) -> Path:
+        """QEMU's state, from its monitor, kept beside the transcript as
+        <name>.monitor: for a guest given up on, to tell where it stopped.
+
+        The vCPUs' registers twice (whether they still move), and each virtio
+        queue as QEMU sees it (`info virtio-queue-status`) and as the guest
+        left it (the avail and used rings' indices, read from guest memory):
+        a request the guest made that QEMU never took shows as an avail index
+        past QEMU's last_avail_idx. A monitor that fails, or takes more than
+        STATE_TIMEOUT seconds over a command, ends the record, said.
+        """
+        path = self.log_path.with_suffix(".monitor")
+        record: list[str] = []
+
+        def ask(line: str, keep: bool = True) -> str:
+            try:
+                reply = _hmp_reply(self.monitor(line, STATE_TIMEOUT))
+            except BootError as err:
+                record.append(f"### {line}\n{err}\n")
+                raise
+            if keep:
+                record.append(f"### {line}\n{reply}")
+            return reply
+
+        try:
+            ask("info status")
+            ask("info registers -a")
+            time.sleep(0.5)
+            ask("info registers -a")
+            for dev in re.findall(r"^(/\S+)", ask("info virtio"), re.MULTILINE):
+                m = re.search(r"num_vqs:\s*(\d+)", ask(f"info virtio-status {dev}", keep=False))
+                for q in range(int(m.group(1)) if m else 0):
+                    queue = ask(f"info virtio-queue-status {dev} {q}")
+                    for ring in ("avail", "used"):
+                        a = re.search(rf"^\s*{ring}:\s*0x([0-9a-fA-F]+)", queue, re.MULTILINE)
+                        if a and int(a.group(1), 16):
+                            # The ring's idx, after its 16-bit flags (a
+                            # queue the guest never set up is at 0).
+                            ask(f"xp /1hx {int(a.group(1), 16) + 2:#x}")
+        except BootError:
+            pass  # said in the record, by ask
+        path.write_text("".join(record))
+        return path
 
     @property
     def mark(self) -> int:
@@ -188,11 +252,11 @@ class Guest:
         # Drop the command's own echo.
         return out.split("\n", 1)[1] if "\n" in out else ""
 
-    def monitor(self, line: str) -> str:
+    def monitor(self, line: str, timeout: float = 30) -> str:
         """One HMP command; its reply. A QEMU gone is a BootError."""
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(30)
+                s.settimeout(timeout)
                 s.connect(str(self.monitor_path))
                 reply = b""
                 while b"(qemu) " not in reply:
