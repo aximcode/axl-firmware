@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
@@ -47,6 +48,12 @@ class WalkerTests(unittest.TestCase):
         with self.assertRaises(fv.NotAnImageError) as cm:
             fv.image_guids(FIXTURES / "volumes" / "not-a-volume.fd")
         self.assertEqual(str(cm.exception), "no firmware volume found")
+
+    def test_check_image_names_what_is_present_and_must_not_be(self) -> None:
+        image = FIXTURES / "volumes" / "both.fd"
+        forbidden = (checks.Driver("VirtioGpuDxe", GPU, "x"), checks.Driver("Nowhere", "0" * 8 + "-0000-0000-0000-" + "0" * 12, "y"))
+        with mock.patch.object(checks, "ABSENT", forbidden), mock.patch.object(checks, "COMMON_DRIVERS", ()):
+            self.assertEqual(checks.check_image("aarch64", image), [f"{image} holds: VirtioGpuDxe ({GPU})"])
 
     def test_check_image_names_what_is_missing(self) -> None:
         image = FIXTURES / "volumes" / "no-gpu.fd"
@@ -349,14 +356,16 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.prefix), [])
 
     def test_member_outside(self) -> None:
-        bad = self.root / "axl-firmware-edk2-stable202602-r9.tar.xz"
-        with tarfile.open(bad, "w:xz") as tar:
-            info = tarfile.TarInfo("../escape")
-            tar.addfile(info)
-        digest = hashlib.sha256(bad.read_bytes()).hexdigest()
-        with self.assertRaises(install.InstallError) as cm:
-            install.install("o/r", str(bad), self.prefix, digest, symbols=False)
-        self.assertEqual(str(cm.exception), f"{bad}: unexpected member '../escape'")
+        for name in ("../escape", "axl-firmware-edk2-stable202602-r9/../../escape", "elsewhere/file"):
+            with self.subTest(name):
+                bad = self.root / "axl-firmware-edk2-stable202602-r9.tar.xz"
+                with tarfile.open(bad, "w:xz") as tar:
+                    tar.addfile(tarfile.TarInfo(name))
+                digest = hashlib.sha256(bad.read_bytes()).hexdigest()
+                with self.assertRaises(install.InstallError) as cm:
+                    install.install("o/r", str(bad), self.prefix, digest, symbols=False)
+                self.assertEqual(str(cm.exception), f"{bad}: unexpected member {name!r}")
+                self.assertFalse((self.root / "escape").exists())
 
     def test_not_a_tag(self) -> None:
         with self.assertRaises(install.InstallError) as cm:
