@@ -46,4 +46,25 @@ AARCH64 under TCG (`cortex-a57`).
 
 ## Sabotage runs in CI
 
-<!-- filled from the runs -->
+Each sabotage was a branch of its own (since deleted), built and checked by
+`ci.yml` on GitHub-hosted `ubuntu-latest`. Every run failed, and failed on the
+checks it targeted. Bases: edk2-stable202611 with patches 0001-0003, except where
+noted.
+
+| Sabotage | What it broke | Run | Failed on |
+|---|---|---|---|
+| static | no patches, `SECURE_BOOT_ENABLE`, no front-page PCD, debug mask 0x07, AARCH64 print level 0x8000004f, RELEASE images taken from DEBUG | 45650340504 | each image `lacks:` the pointer drivers (and AARCH64 QemuVideoDxe, and the Shell under Secure Boot); `holds: SecureBootConfigDxe`; `PcdBootManagerMenuFile` not UiApp; `PcdDebugPrintErrorLevel 0x8000004f, not 0x80000000`; `not a RELEASE build`; `a RELEASE build without MDEPKG_NDEBUG` |
+| boot | `PcdBootManagerMenuFile` unset, the version string, the debug levels, `PcdVideoHorizontal/VerticalResolution` 1024x768 | 45653681305 | `std-VGA's GOP is 1024x768, not 1280x800` (both arches, both flavours, `edid=off`); `no front page after the Shell's exit`; `SMBIOS type 0 BIOS version 'sabotaged'`; X64 `no verbose DEBUG output on debugcon 0x402`; AARCH64 `199650 bytes on the second UART, 170 INFO lines; errors only was expected`; RELEASE `bytes of DEBUG output` |
+| boot, first run (EDID on) | as above | 45650236372 | all of the above except the GOP, which QEMU's EDID masked; this is why the std-VGA boot runs with `edid=off` |
+| text-modes | a manifest claiming text modes other than those measured | 45650284789 | the re-check refused it, naming the measured and the claimed modes |
+| variant-gate | patch 0002 with the downstream reference's gate (skip the VGA port writes for the whole MMIO variant) | 45653695502 | `std-VGA's GOP is 640x480, not 1280x800` on X64 and AARCH64, both flavours |
+| bochs-ungated | patch 0002 without its gate (QemuVideoDxe's legacy VGA port writes on AARCH64) | 45650246888 | AARCH64 std-VGA and bochs-display boots `no Shell prompt within 180 s` (a synchronous exception, then an ASSERT in ArmCpuDxe), both flavours |
+| nv-readonly | the vars pflash read-only | 45650933400 | X64 `after a cold start the variable reads nothing`, both flavours; AARCH64 does not boot at all with read-only vars |
+| source-git | a file written into the edk2 source, only the git-status guard active | 45654292168 | `the build changed the source tree` |
+| source-stamp | a file written where git cannot see it, only the stamp guard active | 45654296317 | `the build wrote into the source tree` |
+| patch 0003 removed (control) | 202611 without 0003 | 45644063120 | AARCH64 DEBUG with two PL011s: `no Shell prompt within 180 s`, `0 bytes on the second UART` |
+| `-cpu max` (control) | the 202602 AARCH64 image (no LPA2 fix) | local, AlmaLinux 10 x86_64, QEMU 10.0.0 | no Shell within 60 s under `max`; reaches the Shell under `cortex-a57` |
+
+Unit-level sabotages (each check's code broken in turn, RED shown, restored by
+copy and checked by sha256) are covered by `tests/` and listed with each row
+above.
