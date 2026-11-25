@@ -45,7 +45,7 @@ Pin both the release tag and its tarball's sha256 in the consumer, as
 rust-osdev's ovmf-prebuilt does:
 
 ```sh
-./build.sh install --from edk2-stable202611-r1 --sha256 <the tarball's sha256>
+./build.sh install --from edk2-stable202611-r2 --sha256 <the tarball's sha256>
 ```
 
 Without `--sha256`, the install trusts the release's own `SHA256SUMS`. With a

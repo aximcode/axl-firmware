@@ -51,7 +51,7 @@ url=https://github.com/tianocore/edk2.git
 #    CPU with FEAT_LPA2, such as QEMU's -cpu max, from 202511 to 202602).
 fixes=(8ba02634ecaa6ff5d0edcea266198f42eca90c53 b8df7d9c8e1e370b862890ebda677278c4c6155f)
 # This repository's release of that tag: the release tag is <tag>-r<N>.
-revision=1
+revision=2
 release="$tag-r$revision"
 repo=aximcode/axl-firmware
 

@@ -1,0 +1,71 @@
+Subject: [PATCH] MdeModulePkg/TerminalDxe: serial control keys match Ctrl registrations
+
+Since 184fb6b1035e ("MdeModulePkg/TerminalDxe: Fix handling of shift
+state in notifications", issue #12281, first in edk2-stable202608),
+IsKeyRegistered requires a registration's KeyShiftState to equal the
+input key's, ignoring only EFI_SHIFT_STATE_VALID. A terminal carries no
+shift state: TerminalDxe gives every key it reads shift state 0
+(EfiKeyFiFoInsertOneKey, KeyNotifyProcessHandler). Upstream accepted
+that notifications with a shift state then never fire on a terminal.
+But the UEFI Shell registers its break as 0x03 (and 'c') with
+EFI_LEFT_CONTROL_PRESSED or EFI_RIGHT_CONTROL_PRESSED, and its pause as
+0x13 (and 's') the same way, so a serial Ctrl-C (0x03) matches none of
+them: it no longer stops a running command, and the prompt comes back
+only when the command ends.
+
+When the input key carries no shift state (0, or EFI_SHIFT_STATE_VALID
+alone) and is a control character 0x01-0x1A (Ctrl+A to Ctrl+Z as a
+terminal sends them; Backspace, Tab, LF and CR are among them), a
+registration whose shift state is only Control (left, right or both,
+with or without EFI_SHIFT_STATE_VALID) matches. Every other case keeps
+#12281's exact comparison, so RCtrl+n still does not fire on a plain
+'n', and the toggle state is still compared exactly. The fix is here,
+not in ShellPkg, so that it serves every registrant of a Ctrl key (any
+Shell binary, any application), as edk2-stable202605 and earlier did.
+
+RegisterKeyNotify's duplicate check calls IsKeyRegistered too: there a
+new registration of a control character with no shift state, for a
+function already registered for that character with Control held, gets
+the existing handle, as before 184fb6b1035e (unregistering either then
+removes both).
+
+axl-firmware's patch against edk2-stable202611, applied after
+0003-map-debug-uart.patch to a copy of the packages it touches.
+
+---
+diff --git a/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConIn.c b/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConIn.c
+index 204d599..6d02cd0 100644
+--- a/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConIn.c
++++ b/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConIn.c
+@@ -183,6 +183,21 @@ IsKeyRegistered (
+   ShiftState      = RegisteredData->KeyState.KeyShiftState | EFI_SHIFT_STATE_VALID;
+   InputShiftState = InputData->KeyState.KeyShiftState | EFI_SHIFT_STATE_VALID;
+ 
++  //
++  // A terminal sends Ctrl+A to Ctrl+Z as the control characters 0x01-0x1A,
++  // and carries no shift state: a key TerminalDxe reads never has one. A key
++  // registered with only Control held (left, right or both), as the UEFI
++  // Shell registers Ctrl-C (0x03) and Ctrl-S (0x13), matches such a
++  // character. Any other shift state must still match exactly, so RCtrl+n
++  // does not fire on a plain 'n' (issue #12281).
++  //
++  if ((InputShiftState == EFI_SHIFT_STATE_VALID) &&
++      (InputData->Key.UnicodeChar >= 0x01) && (InputData->Key.UnicodeChar <= 0x1A) &&
++      ((ShiftState & ~(EFI_LEFT_CONTROL_PRESSED | EFI_RIGHT_CONTROL_PRESSED)) == EFI_SHIFT_STATE_VALID))
++  {
++    ShiftState = InputShiftState;
++  }
++
+   if ((ShiftState != InputShiftState) ||
+       (RegisteredData->KeyState.KeyToggleState != InputData->KeyState.KeyToggleState))
+   {
+@@ -387,7 +402,8 @@ TerminalConInRegisterKeyNotify (
+     // Shift state and toggle state are not transferred via serial lines, so
+     // the notification functions for the keys with nonzero KeyShiftState or
+     // KeyToggleState will never trigger with this implementation of SimpleTextInEx
+-    // protocol.
++    // protocol, except a control character 0x01-0x1A registered with only
++    // Control held, which IsKeyRegistered matches to the character alone.
+     //
+     DEBUG ((
+       DEBUG_VERBOSE,

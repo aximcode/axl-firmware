@@ -53,7 +53,7 @@ Steps, in order:
      included), built there with `make -C BaseTools`. **No in-tree BaseTools
      step is needed:** the C tools and their Python run from the copy.
    - `overlay/<Package>/`: a copy of each package a patch touches (today
-     `ArmVirtPkg` and `OvmfPkg`), with `patches/*.patch` applied in name order
+     `ArmVirtPkg`, `MdeModulePkg` and `OvmfPkg`), with `patches/*.patch` applied in name order
      by `git apply`.
    - `Conf/` and `Build/`: edk2's, from `$EDK_TOOLS_PATH/BuildEnv`.
    - The environment: `WORKSPACE=work/ws`, `PACKAGES_PATH=work/ws/overlay:<source>`,
@@ -74,8 +74,9 @@ Steps, in order:
    it before anything is packed. [PROPERTIES.md](PROPERTIES.md) lists the checks.
 
 Measured on AlmaLinux 10 x86_64 (gcc 14, 4 jobs, nice 19), in axlvmpool: about
-1 min 20 s per arch and flavour from clean. The boot checks take about 25 s for
-X64 under KVM and a few minutes for AARCH64 under TCG.
+1 min 20 s per arch and flavour from clean. The boot checks took about 25 s for
+X64 under KVM and a few minutes for AARCH64 under TCG before r2's `ctrl-c` boot,
+which adds a boot of about 5 s per image set.
 
 ## CI
 
@@ -109,20 +110,28 @@ what was found.
    (the old one is left alone) and checks it, the fixes included.
 2. **Read what changed** between the tags (`git log <old>..<new> -- <path>` in
    the cache) in `OvmfPkg`, `ArmVirtPkg`, `MdeModulePkg/Universal/BdsDxe` and
-   `Console`, and `ShellPkg`'s `mode`, `dmpstore` and `smbiosview` (their
-   output is parsed); and in the source, each assumption the build rests on:
+   `Console` (TerminalDxe's key notifications too), and `ShellPkg`'s `mode`,
+   `dmpstore` and `smbiosview` (their output is parsed); and in the source, each assumption the build rests on:
    `PcdBootManagerMenuFile` in `OvmfPkgX64.dsc` and `ArmVirtQemu.dsc` (still
    BootManagerMenuApp?); `OvmfDisplayPcds.dsc.inc`; TerminalDxe's mode table;
    the Shell's boot option category (`LOAD_OPTION_CATEGORY_APP`); every `-D`
    define of QEMU's flags still referenced; `OUTPUT_DIRECTORY`; the
    `PcdDebugPropertyMask` and `PcdDebugPrintErrorLevel` values; whether
    upstream now has anything a patch adds. Record each finding in DESIGN.md.
-3. **Re-check, then rebase, each patch** (all three: 0001 pointer drivers,
-   0002 bochs-display video, 0003 the debug UART's PEI mapping). First check
-   whether upstream has fixed or added what it does by the new tag; if so,
-   drop the patch (or the part), and say so in CHANGELOG.md and DESIGN.md.
+3. **Re-check, then rebase, each patch** (all four: 0001 pointer drivers,
+   0002 bochs-display video, 0003 the debug UART's PEI mapping, 0004
+   TerminalDxe's control keys). First check whether upstream has fixed or
+   added what it does by the new tag; if so, drop the patch (or the part),
+   and say so in CHANGELOG.md and DESIGN.md. For 0004, read
+   `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and
+   the Shell's key registrations (`ShellProtocol.c`, `Shell.c`). Upstream
+   meant its exact match (DESIGN.md §4.21), so expect to keep it: drop it
+   only when upstream's `IsKeyRegistered` matches a serial 0x03 to a
+   Control registration again. A Shell that registers 0x03 with no shift
+   state fixes only the Shell, so 0004 stays for other registrants. Rebase
+   it with the same care: the `ctrl-c` boot check shows it still works.
    Then rebase what remains: copy the tracked files of the packages they touch
-   (`git ls-files -z -- OvmfPkg ArmVirtPkg | tar ...`), apply the patches in
+   (`git ls-files -z -- OvmfPkg ArmVirtPkg MdeModulePkg | tar ...`), apply the patches in
    order with `git apply` (resolve by hand where one fails), and regenerate
    each from the copies before and after it with `git diff --no-index`, keeping
    its header's prose (with the new tag named). The edk2 files are CRLF;

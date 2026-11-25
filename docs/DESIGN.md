@@ -91,7 +91,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
      from `OvmfDisplayPcds.dsc.inc`; every checked GUID is still its INF's.
      Upstream added none of the patches' drivers, nor QemuVideoDxe on
      ArmVirtQemu, nor the write-combine PCD, so patches 0001 and 0002 stay
-     whole, regenerated against 202611; 202611 needed a third, 0003 (§4.19). Changes met: ArmVirtQemu's components and
+     whole, regenerated against 202611; 202611 needed a third, 0003 (§4.19),
+     and a fourth, 0004 (§4.21), in r2. Changes met: ArmVirtQemu's components and
      PCDs partly moved into `ArmVirt.dsc.inc`; VirtioKeyboardDxe is now
      VirtioInputDxe; `ArmVirtQemu.dsc` sets `PcdDebugPrintErrorLevel|0` for
      VirtioSerialDxe; ArmVirtQemu may dispatch an emulated variable store
@@ -258,6 +259,69 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     host names, home paths, LAN IPs or vendor names; the release records only
     its CI run, commit and compilers. The install now falls back to the plain
     release URL with no login (sha256 is the trust anchor).
+21. **Patch 0004, serial control keys reach key notifications** (owner,
+    2026-11-25: carry it, with no upstream report). Found by axl-sdk on r1,
+    both arches: a serial Ctrl-C behind typed-ahead keys brought the Shell's
+    prompt back only after 40-49 s, and did not stop a running command
+    part-way; every axl-sdk test that types a Ctrl-C was green on 202602.
+    The cause is upstream `184fb6b1035e` ("MdeModulePkg/TerminalDxe: Fix
+    handling of shift state in notifications", 2026-05-26, issue #12281,
+    first in 202608): TerminalDxe's `IsKeyRegistered` now requires a
+    registration's KeyShiftState to equal the input key's, ignoring only
+    `EFI_SHIFT_STATE_VALID`. TerminalDxe gives every key it reads shift state
+    0 (`EfiKeyFiFoInsertOneKey` and `KeyNotifyProcessHandler`, the two
+    notification paths), while the Shell registers its break as 0x03 and
+    'c', and its pause as 0x13 and 's', each with
+    `EFI_LEFT_CONTROL_PRESSED` or `EFI_RIGHT_CONTROL_PRESSED` (ShellPkg
+    `ShellProtocol.c` and `Shell.c`), through ConSplitter, which passes the
+    registration to TerminalDxe unchanged. So 0x03 matched nothing.
+    Upstream chose this knowingly: the commit message, and a comment in
+    `TerminalConInRegisterKeyNotify`, say that notifications with a shift
+    state "will never trigger" over a serial line. No upstream change to
+    the Shell's registrations, or report of the break, as of 2026-11-25.
+    - *The patch.* In `IsKeyRegistered`: when the input key carries no shift
+      state (0 or `EFI_SHIFT_STATE_VALID` alone) and its UnicodeChar is a
+      control character 0x01-0x1A, a registration whose shift state is only
+      Control bits (left, right or both, with or without VALID) matches.
+      Otherwise #12281's exact comparison stands (RCtrl+n does not fire on
+      a plain 'n'), and the toggle state is compared exactly as before. The
+      ScanCode and UnicodeChar must still be equal, so the Shell's 'c' and
+      's' registrations never match serial input. The range holds
+      Backspace, Tab, LF and CR (0x08, 0x09, 0x0A, 0x0D) too: a Ctrl+Enter
+      registration fires on a serial Enter, as any registration of Enter did
+      before `184fb6b1035e`. Each serial 0x03 calls the Shell's function
+      twice (its LCtrl and RCtrl registrations), as on 202602. The patch
+      also corrects upstream's comment in `TerminalConInRegisterKeyNotify`.
+    - *Why TerminalDxe, not ShellPkg.* Registering 0x03 and 0x13 with no
+      shift state in the Shell would fix only the Shell this release ships.
+      The TerminalDxe patch serves every registrant of a Ctrl key: any
+      Shell binary a consumer boots, and applications such as axl-sdk's,
+      which also stopped seeing a serial Ctrl-C on r1.
+    - *Duplicate registrations.* `RegisterKeyNotify`'s duplicate check calls
+      the same function, with the caller's key data: a new registration of
+      a control character with no shift state, for a function already
+      registered for it with Control held, gets the existing handle, as
+      before `184fb6b1035e`. ConSplitter's own check does not merge them, so
+      it then holds two entries over one TerminalDxe notification:
+      unregistering either removes it, and the other's unregister fails.
+      Nothing in edk2 or the Shell registers that way.
+    - *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0; X64 under KVM, AARCH64
+      under TCG `cortex-a57`): a Shell script ticking every 0.1 s for a
+      minute, sent 0x03 after its third tick. On r1 the script ran to its
+      end on all four image sets (X64 DEBUG prompt 52-60 s after the 0x03,
+      AARCH64 DEBUG 61.5 s after the script started); on axlvmpool's 202602
+      X64 image the prompt came 0.10 s after it; with 0004, 0.10 s on all
+      four image sets, three breaks each (the script's 0.1 s `stall` is the
+      granularity).
+    - *Ctrl-S is not fixed, and was never a serial feature.* The Shell's
+      notification function sets its pause flag only for 's' with Control
+      held, and the pause loop in `ConsoleLogger.c` re-pauses only on that
+      key too; 0x13 is never acted on. Measured: output did not pause after
+      a serial 0x13 on axlvmpool's 202602 X64 image, on r1, or with 0004
+      (49-50 ticks in the 5 s after it on all four image sets). Making
+      serial Ctrl-S pause would need a ShellPkg change: §5.6.
+    - *Checked on every release*: the `ctrl-c` boot (PROPERTIES.md), RED on
+      r1's four installed image sets.
 
 ## 5. Open decisions (the owner's)
 
@@ -274,6 +338,14 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    (remove `<prefix>/<release>` and its descriptors).
 5. **QEMU's flags reproduced rather than vendored** (decided by the builder in
    axlvmpool item 101; the owner may revisit).
+6. **Serial Ctrl-S** (raised 2026-11-25, §4.21). A serial 0x13 reaches the
+   Shell with patch 0004, but the Shell pauses only for 's' with Control
+   held, so serial output never pauses, as on 202602. A ShellPkg patch
+   (0x13 accepted beside 's' in `NotificationFunction` and in
+   `ConsoleLogger.c`'s pause loop) would make it pause; it would be the
+   first patch to change the Shell's behaviour rather than restore it.
+   *Recommendation:* leave it unless a consumer needs serial Ctrl-S; no
+   axl-sdk test checks a pause.
 
 ## 6. Assumptions
 
