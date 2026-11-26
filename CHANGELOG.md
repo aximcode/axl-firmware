@@ -4,8 +4,9 @@ Each release is `<edk2 tag>-r<N>`; its section here is its release notes.
 
 ## edk2-stable202611-r3
 
-A second serial port on AARCH64, and a manifest field naming the images
-for real hardware. Everything else is as in r2.
+A second serial port on AARCH64, a manifest field naming the images
+for real hardware, and DEBUG images that survive the Shell's
+`reconnect -r` without an RNG instruction. Everything else is as in r2.
 
 - **`0005-pci-serial.patch`**: ArmVirtQemu now builds PciSioSerialDxe,
   so an AARCH64 guest given a PCI 16550 UART (QEMU's `-device
@@ -20,9 +21,18 @@ for real hardware. Everything else is as in r2.
   release whose entry names a missing image, another arch's, or one not
   RELEASE is not packed. `default_flavour` stays `DEBUG`, and the
   manifest stays format 2: no existing field was removed or reshaped
-  (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
+  (`edk2.patches` lists 0005 and 0015, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
-- Each new tag re-checks all five patches against upstream.
+- **`0015-reconnect-rng.patch`**: the Shell's `reconnect -r` no longer
+  stops a DEBUG image with `ASSERT [Ip4Dxe] DxeNetLib.c(944)` when a NIC
+  is present and virtio-rng is the only RNG (AARCH64 under `-cpu
+  cortex-a57`, X64 without RDRAND). DxeNetLib now returns its
+  documented EFI_NOT_FOUND without asserting, and the network drivers
+  start again later in the same reconnect, as RELEASE images already
+  did; RELEASE code is unchanged. A new boot check, `reconnect`, runs
+  `reconnect -r` on all four image sets and requires a DHCP lease after
+  it (`reconnect_network` in each image's `measured`).
+- Each new tag re-checks all six patches against upstream.
 
 ## edk2-stable202611-r2
 

@@ -542,6 +542,174 @@ class CtrlCTests(unittest.TestCase):
         )
 
 
+# A Shell with one NIC for the reconnect check, run as `python -c <this>
+# <mode> <debug log>`. `ifconfig -l` lists eth0 (with no address until a
+# DHCP lease), `ifconfig -s eth0 dhcp` leases 10.0.2.15 after two more
+# `ifconfig -l eth0`, and `reconnect -r` behaves as mode says: "works"
+# writes DxeNetLib's "Failed to locate EFI_RNG_PROTOCOL" to the debug log and
+# brings the prompt back, as a DEBUG image with patch 0015 does; "has-rng"
+# brings it back writing nothing, as an image that never lacked an RNG;
+# "asserts" writes edk2's ASSERT lines too and hangs, as a DEBUG image's
+# CpuDeadLoop does; "asserts-returns" writes them and still brings the prompt
+# back; "no-eth0" leaves no eth0 listed; "no-lease" never leases; "no-nic"
+# never lists eth0; "hangs" never brings the prompt back, writing no ASSERT;
+# "boot-window" writes the RNG error at startup, before
+# the prompt, and nothing in `reconnect -r`.
+_FAKE_NET_SHELL = r"""
+import os, sys
+mode, debug = sys.argv[1], sys.argv[2]
+state = {"eth0": mode != "no-nic", "dhcp": False, "asks": 0}
+if mode == "boot-window":
+    with open(debug, "a") as f:
+        f.write("Failed to locate EFI_RNG_PROTOCOL: Not Found\r\n")
+def out(s):
+    os.write(1, s.encode())
+def ifconfig():
+    if not state["eth0"]:
+        return ""
+    addr = "0.0.0.0"
+    if state["dhcp"] and mode != "no-lease":
+        state["asks"] += 1
+        if state["asks"] > 2:
+            addr = "10.0.2.15"
+    return f"---\r\n\r\nname         : eth0\r\nMedia State  : Media present\r\n\r\nipv4 address : {addr}\r\n\r\n---\r\n"
+out("Shell> ")
+line = b""
+while (c := os.read(0, 1)):
+    if c != b"\r":
+        out(c.decode())
+        line += c
+        continue
+    out("\r\n")
+    if line in (b"ifconfig -l", b"ifconfig -l eth0"):
+        out(ifconfig())
+    elif line == b"ifconfig -s eth0 dhcp":
+        state["dhcp"] = True
+    elif line == b"reconnect -r":
+        if mode not in ("has-rng", "boot-window"):
+            with open(debug, "a") as f:
+                f.write("Failed to locate EFI_RNG_PROTOCOL: Not Found\r\n")
+        if mode.startswith("asserts"):
+            with open(debug, "a") as f:
+                f.write("ASSERT_EFI_ERROR (Status = Not Found)\r\n")
+                f.write("ASSERT [Ip4Dxe] DxeNetLib.c(944): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)\r\n")
+            if mode == "asserts":
+                line = b""
+                continue
+        if mode == "hangs":
+            line = b""
+            continue
+        if mode == "no-eth0":
+            state["eth0"] = False
+    out("Shell> ")
+    line = b""
+"""
+
+
+class ReconnectTests(unittest.TestCase):
+    """`reconnect -r` must come back without an ASSERT, and the network with it."""
+
+    def guest(self, t: str, mode: str) -> tuple[boot.Guest, Path]:
+        debug = Path(t) / "debug.log"
+        debug.write_text("")
+        g = boot.Guest([sys.executable, "-c", _FAKE_NET_SHELL, mode, str(debug)], Path(t), Path(t), "fake", 5)
+        self.addCleanup(g.close)
+        g.prompt()
+        return g, debug
+
+    def failure(self, mode: str, bound: float = 5, debug_flavour: bool = True) -> str:
+        with tempfile.TemporaryDirectory() as t:
+            g, debug = self.guest(t, mode)
+            with self.assertRaises(boot.BootError) as err:
+                boot.reconnect_network(g, debug, debug_flavour, bound, 2)
+            return str(err.exception)
+
+    def test_works(self) -> None:
+        for mode, debug_flavour in (("works", True), ("works", False), ("has-rng", False)):
+            with self.subTest(mode=mode, debug_flavour=debug_flavour), tempfile.TemporaryDirectory() as t:
+                g, debug = self.guest(t, mode)
+                took = boot.reconnect_network(g, debug, debug_flavour, 5, 2)
+                self.assertLess(took, 5)
+
+    def test_has_rng(self) -> None:
+        self.assertEqual(
+            self.failure("has-rng"),
+            "fake: no 'Failed to locate EFI_RNG_PROTOCOL' on the debug channel in `reconnect -r`: the network "
+            "stack never started without an RNG, so it tested nothing",
+        )
+
+    def test_hangs(self) -> None:
+        self.assertEqual(
+            self.failure("hangs", 1).split("\n")[0],
+            "fake: no prompt after `reconnect -r` within 1 s; console ends:",
+        )
+
+    def test_boot_window(self) -> None:
+        self.assertEqual(self.failure("boot-window"), self.failure("has-rng"))
+
+    def test_no_lease_release(self) -> None:
+        self.assertEqual(
+            self.failure("no-lease", debug_flavour=False),
+            "fake: eth0 has no DHCP lease (10.0.2.15) within 2 s after `reconnect -r`: its ipv4 address is 0.0.0.0",
+        )
+
+    def test_asserts(self) -> None:
+        self.assertEqual(
+            self.failure("asserts", 1),
+            "fake: the firmware asserted in `reconnect -r`: "
+            "ASSERT [Ip4Dxe] DxeNetLib.c(944): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)",
+        )
+
+    def test_asserts_returns(self) -> None:
+        self.assertEqual(
+            self.failure("asserts-returns"),
+            "fake: the firmware asserted in `reconnect -r`: "
+            "ASSERT [Ip4Dxe] DxeNetLib.c(944): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)",
+        )
+
+    def test_no_eth0_after(self) -> None:
+        self.assertEqual(self.failure("no-eth0"), "fake: `ifconfig -l` lists no eth0 after `reconnect -r`")
+
+    def test_no_lease(self) -> None:
+        self.assertEqual(
+            self.failure("no-lease"),
+            "fake: eth0 has no DHCP lease (10.0.2.15) within 2 s after `reconnect -r`: its ipv4 address is 0.0.0.0",
+        )
+
+    def test_no_nic(self) -> None:
+        self.assertEqual(self.failure("no-nic"), "fake: `ifconfig -l` lists no eth0 before `reconnect -r`")
+
+    def test_assert_line(self) -> None:
+        self.assertEqual(
+            boot.first_assert(
+                "Failed to locate EFI_RNG_PROTOCOL: Not Found\nASSERT_EFI_ERROR (Status = Not Found)\n"
+                "ASSERT DxeNetLib.c(944): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)\n"
+            ),
+            "ASSERT DxeNetLib.c(944): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)",
+        )
+        self.assertIsNone(boot.first_assert("Tcg2: Not Found\nASSERT_EFI_ERROR is a word here\n"))
+
+    def test_argv(self) -> None:
+        x64 = ["qemu", "-machine", "q35", "-accel", "kvm", "-cpu", "host", "-m", "1024"]
+        self.assertEqual(
+            boot.reconnect_argv(x64, "x64", Path("/d.log")),
+            [
+                "qemu", "-machine", "q35", "-accel", "kvm", "-cpu", "host,-rdrand,-rdseed", "-m", "1024",
+                "-debugcon", "file:/d.log", "-global", "isa-debugcon.iobase=0x402",
+                "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0,romfile=", "-device", "virtio-rng-pci",
+            ],
+        )  # fmt: skip
+        aa64 = ["qemu", "-machine", "virt", "-accel", "tcg", "-cpu", "max"]
+        self.assertEqual(
+            boot.reconnect_argv(aa64, "aarch64", Path("/d.log")),
+            [
+                "qemu", "-machine", "virt", "-accel", "tcg", "-cpu", "cortex-a57",
+                "-serial", "file:/d.log",
+                "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0,romfile=", "-device", "virtio-rng-pci",
+            ],
+        )  # fmt: skip
+
+
 class BootChecksTests(unittest.TestCase):
     """The boot checks refuse a bad setting or a missing QEMU, said."""
 

@@ -644,6 +644,100 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       the manifest's images, of the entry's own arch, whose flavour is
       `RELEASE`. Any other entry fails the release.
 
+33. **Patch 0015, `reconnect -r` with virtio-rng as the only RNG** (owner,
+    2026-11-25, for r3; found by the r3 drivers work). On a CPU with no
+    RNG instruction, a DEBUG image asserted in the Shell's `reconnect -r`
+    whenever a NIC was present: `ASSERT [Ip4Dxe] DxeNetLib.c(944)`, after
+    "Failed to locate EFI_RNG_PROTOCOL: Not Found", and the guest stopped
+    (deadloop). r1 and r2 alike, and every r3 branch before this patch.
+    - *Cause.* Since the CVE-2023-45237 fix, DxeNetLib's `PseudoRandom`
+      takes its numbers from EFI_RNG_PROTOCOL, and the library's Depex on
+      `gEfiRngProtocolGuid` keeps the network drivers from being
+      dispatched until one exists. That holds only for dispatch. With
+      neither RNDR (AARCH64 `cortex-a57`) nor RDRAND (X64 `qemu64`, or
+      `-cpu host,-rdrand,-rdseed` under KVM), SecurityPkg's RngDxe
+      installs nothing, and the only RNG is VirtioRngDxe, a driver-model
+      driver on the virtio-rng PCI device. `reconnect -r` disconnects
+      every driver, VirtioRngDxe's included, and connects the NIC's stack
+      before virtio-rng's: Ip4Dxe, Ip6Dxe and UefiPxeBcDxe then start with
+      no RNG. `PseudoRandom` returns EFI_NOT_FOUND, as documented, and
+      all 20 of its call sites at the tag check that and return it. On a
+      Start path (Ip4Dxe and Ip6Dxe's DriverBindingStart, Dhcp4Dxe,
+      Dhcp6Dxe and Ip6Dxe's service creation, UefiPxeBcDxe's IPv6
+      children) the start fails, so a later ConnectController in the same
+      `reconnect -r` starts the driver again; Udp4Dxe, Udp6Dxe and TcpDxe
+      call it only in their entry points, behind the Depex. But it also
+      asserted. A RELEASE image, with no ASSERT compiled in, already went
+      on and the network worked. With `-cpu max` (RNDR), or X64 under KVM
+      with RDRAND, RngDxe is the RNG, nothing is disconnected, and nothing
+      happens.
+    - *The fix: drop that one ASSERT.* `PseudoRandom` keeps its
+      DEBUG_ERROR line and returns EFI_NOT_FOUND. The ASSERTs on a GetRNG
+      failure stay, since there an RNG exists and failed. RELEASE
+      compiles no ASSERT, so RELEASE's code is unchanged; DEBUG now does
+      what RELEASE did. Alternatives weighed:
+      - *Ip4Dxe's (and every network driver's) Supported() refusing until
+        an RNG exists*: eight drivers patched, not one line, and it still
+        relies on a later connect to start them, exactly as a failing
+        Start does; nothing gained.
+      - *A reconnect order that brings virtio-rng first* (a Shell
+        change): it fixes only the Shell's `reconnect`, not BDS, a
+        `connect` of one handle, or an application's ConnectController,
+        and leaves the ASSERT armed for any other order. Moving
+        virtio-rng ahead of the NIC on QEMU's command line did not help
+        either: r2 asserted the same way.
+      - *An RNG that is always there* (RngDxe with a timer-based RngLib):
+        a weaker entropy source for every network driver on every boot,
+        which is what CVE-2023-45237's fix took away; not this patch's
+        business.
+    - *Real boards without an RNG instruction.* Nothing changes for them
+      at boot: with no RNG at all, the Depex still keeps the network
+      drivers from dispatching, as upstream intends (edk2 issue #9530,
+      closed as invalid: OVMF's network stack now needs an RNG, such as
+      `-device virtio-rng-pci`). With a
+      driver-model RNG that arrives late, a network driver's start now
+      fails with the same two error lines and is started by the next
+      connect, as in RELEASE; it never silently stays down while an RNG
+      exists and something connects the controller.
+    - *Upstream.* edk2 master (`08f2a6d1`, 2026-11-26) has the same code:
+      no commit since the tag touches DxeNetLib, VirtioRngDxe or the
+      Shell's reconnect, and no issue or pull request found names this
+      ASSERT. A candidate to send upstream.
+    - *Checked on every release*: the `reconnect` boot (PROPERTIES.md,
+      `boot.reconnect_network`), on all four image sets: a NIC on QEMU's
+      user network (`-device virtio-net-pci,romfile=`) and `-device
+      virtio-rng-pci`, AARCH64 under `cortex-a57`, X64 with
+      `,-rdrand,-rdseed` added to its CPU (`host` under KVM, `max` under
+      TCG); `ifconfig -l` must list eth0; `reconnect -r` must bring the
+      prompt back within 60 s with no DebugLib ASSERT line on the debug
+      channel; a DEBUG image must have printed "Failed to locate
+      EFI_RNG_PROTOCOL" during it (else the boot tested nothing: a CPU
+      model that gained an RNG, say); eth0 must be listed again and get
+      QEMU's first DHCP lease, 10.0.2.15, within 30 s (`ifconfig -s eth0
+      dhcp`), which needs MNP, Ip4, Udp4 and Dhcp4 started again. The
+      boot has its own vars copy, since the DHCP policy is kept in NV.
+      `reconnect_network: true` in each image's `measured`.
+    - *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0; AARCH64 under TCG,
+      X64 under KVM unless said). r2 DEBUG, both arches: no prompt after
+      `reconnect -r`; the check fails with `the firmware asserted in
+      \`reconnect -r\`: ASSERT [Ip4Dxe] DxeNetLib.c(944): !(((RETURN_STATUS)(Status))
+      >= 0x8000000000000000ULL)` (X64: `ASSERT DxeNetLib.c(944): ...`); X64
+      the same under TCG `-cpu qemu64` and `max,-rdrand,-rdseed`. r2
+      RELEASE AARCH64: passes (lease in 3.8 s, `ping 10.0.2.2` 2 of 2).
+      r3 with 0015, every boot check on all four image sets: no problem;
+      `reconnect -r` back in 0.28-0.75 s; each DEBUG debug log holds five
+      "Failed to locate EFI_RNG_PROTOCOL" lines (Ip4DriverBindingStart and
+      Ip6DriverBindingStart twice, UefiPxeBcDxe once) and no ASSERT; the
+      lease came in 3.8 s and `ping 10.0.2.2` answered 2 of 2.
+      Sabotage: the same r3 build without 0015 (patches 0001-0005), DEBUG
+      on both arches, every boot check: only the `reconnect` boot failed,
+      on both, with the ASSERT line above (`reconnect_network: false`);
+      every other check passed. RELEASE: AARCH64 RELEASE built with and
+      without 0015 (in workspaces of different names, so the images
+      differ throughout, as §4.26 found for DEBUG) has byte-identical
+      `.text` in Ip4Dxe, TcpDxe and Dhcp4Dxe (each links DxeNetLib);
+      their `.data` differs, holding no differing string.
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact

@@ -207,6 +207,7 @@ Each `images.<dir>.measured`:
 | `debug_output` | {`where`, `bytes`, `info_lines`} | what reached the DEBUG channel in the serial boot |
 | `gop_std_vga` | {`size`: [w, h], `drawn`: bool} | std-VGA's screen at the Shell (`edid=off`), from a screendump: its size (1280x800 on both arches) and whether any pixel is lit |
 | `bochs_display` | {`devices`, `size`: [w, h], `drawn`: bool} | QemuVideoDxe's device count on `bochs-display`, and its screen at the Shell (`edid=off`, so the firmware's default, 1280x800 on both arches), from a screendump: its size and whether any pixel is lit |
+| `reconnect_network` | bool | from r3: the reconnect boot passed: `reconnect -r` with virtio-rng the only RNG came back with no ASSERT, and eth0 got a DHCP lease after it |
 | `cpu_models_reach_shell` | {model: bool} | AARCH64 only: a boot under each `-cpu` (`max`, `cortex-a57`, `neoverse-v1`) reached the Shell |
 
 A consumer checks an installed image as the install does: the manifest parses
