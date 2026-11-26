@@ -157,6 +157,11 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   by BDS whether or not QEMU gives a boot order (`bootindex`), so no `connect
   -r` is needed; but it is a console only when a ConIn, ConOut or ErrOut
   variable names it. On X64 the port is a console from the start.
+  **Pick it by device path, not by SerialIo index:** on AARCH64 the PCI port
+  enumerates after the console PL011 (index 1), on X64 before COM1 (index 0),
+  so code that takes index 0 as "the PCI UART" grabs the console on AARCH64.
+  Match `PciRoot(0x0)/Pci(...)/Uart(...)` (found by SoftBMC adopting r3,
+  2026-11-26).
 - **The PS/2 mouse (X64, from r3) needs a full connect, and no other mouse.**
   Patch 0006 gives QEMU's PS/2 mouse a SimplePointer at
   `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0)`. OVMF's BDS connects it only
