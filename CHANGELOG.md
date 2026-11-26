@@ -14,6 +14,31 @@ for real hardware. Everything else is as in r2.
   the new port is a console only when a ConIn, ConOut or ErrOut variable
   names it. X64 is built as in r2 (the patch touches only ArmVirtPkg).
   The driver check now requires PciSioSerialDxe on both arches.
+  ArmVirtQemu's BDS now connects the port even when QEMU gives a boot
+  order (a `bootindex`), so it has its EFI_SERIAL_IO without a `connect -r`.
+- **Console and input fixes** (r3 console):
+  - `0006-ps2-mouse-sio.patch`: X64's PS/2 mouse works: SioBusDxe gains a
+    PNP0F03 child, so Ps2MouseDxe binds (`Acpi(PNP0F03,0x0)`); QEMU sends it
+    events while no USB or virtio mouse is its active one.
+  - `0007-shell-ctrl-s.patch`: a serial Ctrl-S (0x13) pauses the Shell's
+    output, and the next key resumes it, as a keyboard's Ctrl-S does (in
+    `edit` and `hexedit` too, and for a terminal's XOFF). A new boot
+    check, `ctrl-s`, on all four image sets.
+  - `0008-terminal-widechar.patch`: on a VT100 (or PC-ANSI, TTY ...)
+    terminal, a character beyond ASCII is written as `?`, not as its low
+    byte (U+0141 was `A`, U+010D a carriage return).
+  - `0009-shell-delete-absent.patch`: the Shell's `DeleteFileByName` of a
+    file that does not exist returns `EFI_NOT_FOUND`, where it created
+    the file, deleted it and returned success (a virtiofs host saw both).
+  - `0010-virtio-mouse-wheel.patch`: `virtio-mouse-pci`'s wheel reaches
+    `RelativeMovementZ`, and its `ResolutionZ` is 8.
+  - **AARCH64's serial console is VT-UTF8**, as X64's: DEL (0x7f) is
+    Backspace (on r2 it was Delete, so `abX`, DEL, `c` gave `abXc`), and
+    box drawing goes out as UTF-8. The measured text modes are unchanged.
+    The boot check now types a DEL at the prompt on all four image sets.
+  - A new static check: every patch the release requires was applied,
+    the patched copy is the source with the patches applied, and its C
+    was compiled from that copy (`build.sh check`: each is listed in `edk2.patches`).
 - **`hardware_images`** in `manifest.json`: per arch, the image to ship
   to real hardware, where a DEBUG build's ASSERT can halt the machine:
   `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Checked: a
@@ -22,7 +47,7 @@ for real hardware. Everything else is as in r2.
   manifest stays format 2: no existing field was removed or reshaped
   (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
-- Each new tag re-checks all five patches against upstream.
+- Each new tag re-checks every patch against upstream.
 
 ## edk2-stable202611-r2
 

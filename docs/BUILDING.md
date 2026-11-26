@@ -54,7 +54,7 @@ Steps, in order:
      included), built there with `make -C BaseTools`. **No in-tree BaseTools
      step is needed:** the C tools and their Python run from the copy.
    - `overlay/<Package>/`: a copy of each package a patch touches (today
-     `ArmVirtPkg`, `MdeModulePkg` and `OvmfPkg`), with `patches/*.patch` applied in name order
+     `ArmVirtPkg`, `MdeModulePkg`, `OvmfPkg` and `ShellPkg`), with `patches/*.patch` applied in name order
      by `git apply`.
    - `Conf/` and `Build/`: edk2's, from `$EDK_TOOLS_PATH/BuildEnv`. Then
      `-march=x86-64` goes on each flavour's X64 `CC_FLAGS` line in
@@ -131,9 +131,12 @@ what was found.
    define of QEMU's flags still referenced; `OUTPUT_DIRECTORY`; the
    `PcdDebugPropertyMask` and `PcdDebugPrintErrorLevel` values; whether
    upstream now has anything a patch adds. Record each finding in DESIGN.md.
-3. **Re-check, then rebase, each patch** (all five: 0001 pointer drivers,
+3. **Re-check, then rebase, each patch** (0001 pointer drivers,
    0002 bochs-display video, 0003 the debug UART's PEI mapping, 0004
-   TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu). First check whether upstream has fixed or
+   TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu and its
+   connection by BDS; r3 console: 0006 the PS/2 mouse's SioBus child, 0007
+   the Shell's serial Ctrl-S, 0008 TerminalDxe's wide characters, 0009 the
+   Shell's DeleteFileByName, 0010 the virtio mouse's wheel). First check whether upstream has fixed or
    added what it does by the new tag; if so, drop the patch (or the part),
    and say so in CHANGELOG.md and DESIGN.md. For 0004, read
    `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and
@@ -149,7 +152,7 @@ what was found.
    compiles the patched function on the host and checks the exact set of
    characters it matches (DESIGN.md §4.21).
    Then rebase what remains: copy the tracked files of the packages they touch
-   (`git ls-files -z -- OvmfPkg ArmVirtPkg MdeModulePkg | tar ...`), apply the patches in
+   (`git ls-files -z -- OvmfPkg ArmVirtPkg MdeModulePkg ShellPkg | tar ...`), apply the patches in
    order with `git apply` (resolve by hand where one fails), and regenerate
    each from the copies before and after it with `git diff --no-index`, keeping
    its header's prose (with the new tag named). The edk2 files are CRLF;
