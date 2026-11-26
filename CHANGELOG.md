@@ -4,12 +4,12 @@ Each release is `<edk2 tag>-r<N>`; its section here is its release notes.
 
 ## edk2-stable202611-r3
 
-Ten more patches (0006-0015): console and input fixes (the PS/2 mouse,
-serial Ctrl-S, wide characters on VT100, the Shell's delete of an absent
-file, the virtio mouse's wheel), driver fixes (virtio-fs from a timer,
-`reconnect -r` with a TCP connection held or with only virtio-rng, a
-cheaper APIC EOI), an AARCH64 TPM, and a second serial port on AARCH64
-(0005). A third image set per arch, GUARDED (the heap guard, no
+Eleven more patches (0006-0016): console and input fixes (the PS/2
+mouse, serial Ctrl-S, wide characters on VT100, the Shell's delete of an
+absent file, the virtio mouse's wheel), driver fixes (virtio-fs from a
+timer, `reconnect -r` with a TCP connection held or with only
+virtio-rng, a cheaper APIC EOI, PcdDxe's lock under the heap guard), an
+AARCH64 TPM, and a second serial port on AARCH64 (0005). A third image set per arch, GUARDED (the heap guard, no
 descriptor); a manifest field naming the images for real hardware;
 AARCH64's serial console VT-UTF8; new boot checks (Ctrl-S, TPM, guard,
 reconnect, TCP and virtio-fs); and an installer conformance fixture.
@@ -117,6 +117,12 @@ are as in r2.
   did; RELEASE code is unchanged. A new boot check, `reconnect`, runs
   `reconnect -r` on all four image sets and requires a DHCP lease after
   it (`reconnect_network` in each image's `measured`).
+- **`0016-pcd-lock-hii.patch`**: PcdDxe no longer allocates or frees
+  memory while holding its database lock (reading or writing a
+  DynamicHii PCD's variable, registering or removing a set callback).
+  With the heap guard an allocation calls the CPU driver, which on X64
+  reads a dynamic PCD: the GUARDED X64 image ASSERTed and never booted
+  with a TPM attached. Other images behave as before.
 - **TCP and virtio-fs boot checks** on the DEBUG and RELEASE sets:
   `reconnect -r` while a resident server holds an accepted TCP connection
   must return (patch 0013), and a virtio-fs file read from a timer beside

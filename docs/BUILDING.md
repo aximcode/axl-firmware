@@ -139,7 +139,7 @@ what was found.
    serial Ctrl-S, 0008 TerminalDxe's wide characters, 0009 the Shell's
    DeleteFileByName, 0010 the virtio mouse's wheel; 0011 VirtioFsDxe's lock,
    0012 LocalApicLib's one MSR read, 0013 TcpDxe's clone child; 0014 the
-   TPM's PEI mapping; 0015 DxeNetLib without an RNG). First check whether upstream has fixed or
+   TPM's PEI mapping; 0015 DxeNetLib without an RNG; 0016 PcdDxe's lock). First check whether upstream has fixed or
    added what it does by the new tag; if so, drop the patch (or the part),
    and say so in CHANGELOG.md and DESIGN.md. For 0004, read
    `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and

@@ -263,6 +263,7 @@ class PatchCheckTests(unittest.TestCase):
                 "0013-tcp-clone-child.patch",
                 "0014-aarch64-tpm-pei-map.patch",
                 "0015-reconnect-rng.patch",
+                "0016-pcd-lock-hii.patch",
             ),
         )
 

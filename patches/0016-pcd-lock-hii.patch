@@ -1,0 +1,286 @@
+Subject: [PATCH] MdeModulePkg/PcdDxe: no allocation or free under mPcdDatabaseLock
+
+PcdDxe held mPcdDatabaseLock while it allocated and freed memory: in
+GetWorker() around GetHiiVariable() and its FreePool() (a DynamicHii
+PCD whose variable exists), in SetWorker() around SetHiiVariable(), and
+in DxeRegisterCallBackWorker() and DxeUnRegisterCallBackWorker() around
+a callback entry's AllocatePool() and FreePool(). With the UEFI heap
+guard (PcdHeapGuardPropertyMask BIT0|BIT1 and pool or page types that
+include the type allocated) an allocation or free sets or clears guard
+pages through the CPU arch protocol's SetMemoryAttributes(). On X64
+OVMF that reaches CpuDxe's GetPageTableEntry(), which reads the dynamic
+PcdPteMemoryEncryptionAddressOrMask: PcdDxe again, on the lock it
+holds, and EfiAcquireLock() ASSERTs (UefiLib.c, "Lock->Lock ==
+EfiLockReleased"). Seen as Tcg2ConfigDxe's InitializeTcg2VersionInfo()
+reading PcdTcgPhysicalPresenceInterfaceVer with a TPM attached: the
+heap-guarded DEBUG image never reached BDS.
+
+GetWorker() and SetWorker() now release the lock around the variable
+call and take it again; GetWorker() frees the variable's buffer after
+its final release. Everything they read before releasing it (the
+GUID, the name, the VARIABLE_HEAD, the default buffer's address, the
+attributes and offset) points into, or comes from, the PCD database,
+which never moves and whose fields no Set changes; the pointer-type
+size and the copy into the default buffer are done under the lock
+again. A Get or Set of the same PCD from a higher TPL may now run
+while the variable is read or written, as two callers' variable
+services calls already could. The callback register and unregister
+functions allocate the entry before taking the lock, and free an
+unused or removed entry after releasing it.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0015-reconnect-rng.patch to a copy of the packages it touches.
+
+---
+diff --git a/MdeModulePkg/Universal/PCD/Dxe/Pcd.c b/MdeModulePkg/Universal/PCD/Dxe/Pcd.c
+index 0e37081..9a504a9 100644
+--- a/MdeModulePkg/Universal/PCD/Dxe/Pcd.c
++++ b/MdeModulePkg/Universal/PCD/Dxe/Pcd.c
+@@ -1055,21 +1055,36 @@ DxeRegisterCallBackOnSet (
+   IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
+   )
+ {
+-  EFI_STATUS  Status;
++  EFI_STATUS         Status;
++  CALLBACK_FN_ENTRY  *NewEntry;
+ 
+   if (CallBackFunction == NULL) {
+     return EFI_INVALID_PARAMETER;
+   }
+ 
++  //
++  // Allocated, and freed if unused, without the lock: with the UEFI heap
++  // guard an allocation may get a dynamic PCD itself (see GetWorker()).
++  //
++  NewEntry = AllocatePool (sizeof (CALLBACK_FN_ENTRY));
++  if (NewEntry == NULL) {
++    ASSERT (NewEntry != NULL);
++    return EFI_OUT_OF_RESOURCES;
++  }
++
+   //
+   // Aquire lock to prevent reentrance from TPL_CALLBACK level
+   //
+   EfiAcquireLock (&mPcdDatabaseLock);
+ 
+-  Status = DxeRegisterCallBackWorker (TokenNumber, Guid, CallBackFunction);
++  Status = DxeRegisterCallBackWorker (TokenNumber, Guid, CallBackFunction, &NewEntry);
+ 
+   EfiReleaseLock (&mPcdDatabaseLock);
+ 
++  if (NewEntry != NULL) {
++    FreePool (NewEntry);
++  }
++
+   return Status;
+ }
+ 
+@@ -1093,21 +1108,31 @@ DxeUnRegisterCallBackOnSet (
+   IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
+   )
+ {
+-  EFI_STATUS  Status;
++  EFI_STATUS         Status;
++  CALLBACK_FN_ENTRY  *OldEntry;
+ 
+   if (CallBackFunction == NULL) {
+     return EFI_INVALID_PARAMETER;
+   }
+ 
++  OldEntry = NULL;
++
+   //
+   // Aquire lock to prevent reentrance from TPL_CALLBACK level
+   //
+   EfiAcquireLock (&mPcdDatabaseLock);
+ 
+-  Status = DxeUnRegisterCallBackWorker (TokenNumber, Guid, CallBackFunction);
++  Status = DxeUnRegisterCallBackWorker (TokenNumber, Guid, CallBackFunction, &OldEntry);
+ 
+   EfiReleaseLock (&mPcdDatabaseLock);
+ 
++  //
++  // Freed without the lock, as in DxeRegisterCallBackOnSet().
++  //
++  if (OldEntry != NULL) {
++    FreePool (OldEntry);
++  }
++
+   return Status;
+ }
+ 
+diff --git a/MdeModulePkg/Universal/PCD/Dxe/Service.c b/MdeModulePkg/Universal/PCD/Dxe/Service.c
+index 761f422..ec9058b 100644
+--- a/MdeModulePkg/Universal/PCD/Dxe/Service.c
++++ b/MdeModulePkg/Universal/PCD/Dxe/Service.c
+@@ -396,6 +396,7 @@ GetWorker (
+   EfiAcquireLock (&mPcdDatabaseLock);
+ 
+   RetPtr = NULL;
++  Data   = NULL;
+ 
+   ASSERT (TokenNumber > 0);
+   //
+@@ -464,7 +465,19 @@ GetWorker (
+         VaraiableDefaultBuffer = (UINT8 *)PcdDb + VariableHead->DefaultValueOffset;
+       }
+ 
++      //
++      // GetHiiVariable() allocates, and FreePool() frees, memory. With the
++      // UEFI heap guard either sets guard pages through the CPU arch
++      // protocol, which may get a dynamic PCD itself (X64 CpuDxe's page
++      // table code does): under the lock that re-entry ASSERTs. So the
++      // variable is read without the lock, and freed after it is released.
++      // Guid, Name, VariableHead and VaraiableDefaultBuffer point into the
++      // PCD database, which never moves, at data no Set changes; the
++      // pointer-type size is read under the lock again, below.
++      //
++      EfiReleaseLock (&mPcdDatabaseLock);
+       Status = GetHiiVariable (Guid, Name, &Data, &DataSize);
++      EfiAcquireLock (&mPcdDatabaseLock);
+       if (Status == EFI_SUCCESS) {
+         if (DataSize >= (VariableHead->Offset + GetSize)) {
+           if (GetSize == 0) {
+@@ -488,8 +501,6 @@ GetWorker (
+           //
+           CopyMem (VaraiableDefaultBuffer, Data + VariableHead->Offset, GetSize);
+         }
+-
+-        FreePool (Data);
+       }
+ 
+       RetPtr = (VOID *)VaraiableDefaultBuffer;
+@@ -511,6 +522,10 @@ GetWorker (
+ 
+   EfiReleaseLock (&mPcdDatabaseLock);
+ 
++  if (Data != NULL) {
++    FreePool (Data);
++  }
++
+   return RetPtr;
+ }
+ 
+@@ -524,6 +539,9 @@ GetWorker (
+   @param Guid               PCD token space's guid,
+                             if not NULL, this PCD is dynamicEx type PCD.
+   @param CallBackFunction   Callback function pointer
++  @param NewEntry           An entry the caller allocated before it took the
++                            lock: used, and set to NULL, when the function is
++                            not registered yet; else left for the caller to free.
+ 
+   @return EFI_SUCCESS Always success for registering callback function.
+ 
+@@ -532,7 +550,8 @@ EFI_STATUS
+ DxeRegisterCallBackWorker (
+   IN  UINTN                  TokenNumber,
+   IN  CONST EFI_GUID         *Guid  OPTIONAL,
+-  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
++  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction,
++  IN OUT CALLBACK_FN_ENTRY   **NewEntry
+   )
+ {
+   CALLBACK_FN_ENTRY  *FnTableEntry;
+@@ -565,11 +584,11 @@ DxeRegisterCallBackWorker (
+     ListNode = GetNextNode (ListHead, ListNode);
+   }
+ 
+-  FnTableEntry = AllocatePool (sizeof (CALLBACK_FN_ENTRY));
+-  if (FnTableEntry == NULL) {
+-    ASSERT (FnTableEntry != NULL);
+-    return EFI_OUT_OF_RESOURCES;
+-  }
++  //
++  // The entry was allocated by the caller, before it took the lock.
++  //
++  FnTableEntry = *NewEntry;
++  *NewEntry    = NULL;
+ 
+   FnTableEntry->CallbackFn = CallBackFunction;
+   InsertTailList (ListHead, &FnTableEntry->Node);
+@@ -587,6 +606,8 @@ DxeRegisterCallBackWorker (
+   @param Guid               PCD token space's guid.
+                             if not NULL, this PCD is dynamicEx type PCD.
+   @param CallBackFunction   Callback function pointer
++  @param OldEntry           The entry removed, for the caller to free once it
++                            has released the lock; untouched when none was.
+ 
+   @retval EFI_SUCCESS               Callback function is success to be unregister.
+   @retval EFI_INVALID_PARAMETER     Can not find the PCD entry by given token number.
+@@ -595,7 +616,8 @@ EFI_STATUS
+ DxeUnRegisterCallBackWorker (
+   IN  UINTN                  TokenNumber,
+   IN  CONST EFI_GUID         *Guid  OPTIONAL,
+-  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
++  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction,
++  OUT CALLBACK_FN_ENTRY      **OldEntry
+   )
+ {
+   CALLBACK_FN_ENTRY  *FnTableEntry;
+@@ -624,7 +646,7 @@ DxeUnRegisterCallBackWorker (
+       // the Link List and return EFI_SUCCESS.
+       //
+       RemoveEntryList (ListNode);
+-      FreePool (FnTableEntry);
++      *OldEntry = FnTableEntry;
+ 
+       return EFI_SUCCESS;
+     }
+@@ -1242,7 +1264,13 @@ SetWorker (
+       Name           = (UINT16 *)(StringTable + VariableHead->StringIndex);
+       VariableOffset = VariableHead->Offset;
+       Attributes     = VariableHead->Attributes;
+-      Status         = SetHiiVariable (Guid, Name, Attributes, Data, *Size, VariableOffset);
++      //
++      // SetHiiVariable() allocates and frees memory: without the lock, as
++      // in GetWorker(). Its arguments are all read above.
++      //
++      EfiReleaseLock (&mPcdDatabaseLock);
++      Status = SetHiiVariable (Guid, Name, Attributes, Data, *Size, VariableOffset);
++      EfiAcquireLock (&mPcdDatabaseLock);
+       break;
+ 
+     case PCD_TYPE_DATA:
+diff --git a/MdeModulePkg/Universal/PCD/Dxe/Service.h b/MdeModulePkg/Universal/PCD/Dxe/Service.h
+index f415504..2138b25 100644
+--- a/MdeModulePkg/Universal/PCD/Dxe/Service.h
++++ b/MdeModulePkg/Universal/PCD/Dxe/Service.h
+@@ -1009,6 +1009,9 @@ SetHiiVariable (
+   @param Guid               PCD token space's guid,
+                             if not NULL, this PCD is dynamicEx type PCD.
+   @param CallBackFunction   Callback function pointer
++  @param NewEntry           An entry the caller allocated before it took the
++                            lock: used, and set to NULL, when the function is
++                            not registered yet; else left for the caller to free.
+ 
+   @return EFI_SUCCESS Always success for registering callback function.
+ 
+@@ -1017,7 +1020,8 @@ EFI_STATUS
+ DxeRegisterCallBackWorker (
+   IN  UINTN                  TokenNumber,
+   IN  CONST EFI_GUID         *Guid  OPTIONAL,
+-  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
++  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction,
++  IN OUT CALLBACK_FN_ENTRY   **NewEntry
+   );
+ 
+ /**
+@@ -1030,6 +1034,8 @@ DxeRegisterCallBackWorker (
+   @param Guid               PCD token space's guid.
+                             if not NULL, this PCD is dynamicEx type PCD.
+   @param CallBackFunction   Callback function pointer
++  @param OldEntry           The entry removed, for the caller to free once it
++                            has released the lock; untouched when none was.
+ 
+   @retval EFI_SUCCESS               Callback function is success to be unregister.
+   @retval EFI_INVALID_PARAMETER     Can not find the PCD entry by given token number.
+@@ -1038,7 +1044,8 @@ EFI_STATUS
+ DxeUnRegisterCallBackWorker (
+   IN  UINTN                  TokenNumber,
+   IN  CONST EFI_GUID         *Guid  OPTIONAL,
+-  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction
++  IN  PCD_PROTOCOL_CALLBACK  CallBackFunction,
++  OUT CALLBACK_FN_ENTRY      **OldEntry
+   );
+ 
+ /**

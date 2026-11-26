@@ -1339,7 +1339,13 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       - the AARCH64 TPM fix in r3 (patch 0014, §4.37; §5 item 13);
       - the RNG fix in r3 (patch 0015, §4.38; §5 item 12);
       - the TCP and virtio-fs reproducers as per-release boot checks
-        (§4.39; §5 item 11).
+        (§4.39; §5 item 11);
+      - patch 0016, PcdDxe's lock (§4.41; §5 item 14, 2026-11-26);
+      - the PS/2 mouse's polling cost accepted (2026-11-26): 0006 stays
+        as it is; CONSUMERS.md states the trade-off (about 700 i8042 reads
+        a second; an idle X64 guest about 1600 exits a second against r2's
+        1300, about 760 with `-machine i8042=off`) and tells a pool that
+        needs no PS/2 mouse to pass `-machine i8042=off`.
     - *The integration build* (`632a056`; AlmaLinux 10 x86_64, gcc 14,
       QEMU 10.0.0, swtpm 0.9.0, virtiofsd 1.13.3; `JOBS=4`,
       `AXLFW_BOOT_JOBS=2`, `AXLFW_REQUIRE_VIRTIOFS=1`; X64 under KVM,
@@ -1389,6 +1395,49 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       RELEASE (sockets 105 and 107), with §5 item 14's X64 GUARDED TPM boot,
       as in the integration build; every other check, `vfs` included,
       passed. Both files restored by copy and checked by sha256.
+
+41. **Patch 0016, no allocation under PcdDxe's lock** (owner, 2026-11-26,
+    for r3; §5 item 14). PcdDxe allocated and freed memory while holding
+    `mPcdDatabaseLock`. Under the UEFI heap guard an allocation or free
+    sets or clears guard pages through `SetMemoryAttributes()`, and X64
+    CpuDxe's `GetPageTableEntry()` reads the dynamic
+    `PcdPteMemoryEncryptionAddressOrMask`: PcdDxe re-entered on its own
+    lock, and `EfiAcquireLock()` ASSERTed. Reached by X64 GUARDED with a
+    TPM (Tcg2ConfigDxe reading the DynamicHii
+    `PcdTcgPhysicalPresenceInterfaceVer`; the chain in §5 item 14).
+    - *Every PcdDxe path checked* (Service.c, Pcd.c at the tag): the lock
+      is taken in `GetWorker()` (used by every Get and GetEx), `SetWorker()`
+      (every Set and SetEx, through `ExSetWorker()`), and
+      `DxeRegisterCallBackOnSet()`/`DxeUnRegisterCallBackOnSet()`. Under it,
+      `GetWorker()` called `GetHiiVariable()` (AllocatePool) and FreePool;
+      `SetWorker()` called `SetHiiVariable()` (AllocatePool, AllocateZeroPool,
+      FreePool); the register worker allocated a `CALLBACK_FN_ENTRY` and the
+      unregister worker freed one. `InvokeCallbackOnSet()` runs before the
+      lock; the token-space walk (`GetDistinctTokenSpace()`'s allocation)
+      runs without it; the database build runs at entry. The patch fixes
+      all four.
+    - *The patch.* `GetWorker()` and `SetWorker()` release the lock around
+      the variable call and take it again; `GetWorker()` frees the
+      variable's buffer after its final release (so a buffer a failed
+      second `GetVariable` left is freed too, where it leaked). Nothing
+      read before the release is used after it without being valid: the
+      GUID, name, `VARIABLE_HEAD` and default buffer's address point into
+      the database, which is built once and never moves, at fields no Set
+      writes; the attributes and offset are copies; the pointer-type size
+      (`GetPtrTypeSize`) and the copy into the default buffer are done
+      after the lock is taken again. What changes: a Get or Set of the same
+      PCD from a higher TPL may now run while the variable is read or
+      written (the variable services serialize themselves); the variable
+      calls run at the caller's TPL, not TPL_NOTIFY. Register allocates the
+      entry before the lock and frees it after if the function was already
+      registered; unregister hands the removed entry back to be freed after
+      the release. Applies after 0015; touches only PcdDxe.
+    - *RED*: the integration build (`632a056`, without 0016): X64
+      GUARDED's TPM boot, no Shell within 180 s, the ASSERT above on
+      debugcon. That build is also the sabotage (the tree less 0016): it
+      failed exactly that boot and nothing else; so did the 0013 sabotage
+      build, beside its four TCP boots. *GREEN*: §4.40's final build.
+    - *Not upstream* as of the tag; a candidate to send.
 
 ## 5. Open decisions (the owner's)
 
@@ -1518,7 +1567,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     check per arch), when a consumer needs a TPM on AARCH64; SoftBMC asked
     about PCRs.
 14. **GUARDED X64 with a TPM ASSERTs in PcdDxe** (found 2026-11-26 by the
-    integration build; **open: blocks the r3 tag**). The integrated build
+    integration build; **decided** by the owner 2026-11-26: patch 0016,
+    §4.41). The integrated build
     passed every check but one: `x64 GUARDED: with a TPM (tpm-tis): no
     Shell prompt within 180 s`, nothing on the serial console. Reproduced
     once with debugcon (AlmaLinux 10 x86_64, QEMU 10.0.0, KVM, swtpm
@@ -1544,7 +1594,6 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     GUARDED TPM boot as its reproducer (RED now) and a rebuild; or, if r3
     should not take another patch, keep GUARDED out of the TPM boot check
     and say in CONSUMERS.md that X64 GUARDED with a TPM does not boot.
-    Not decided here.
 
 ## 6. Assumptions
 
