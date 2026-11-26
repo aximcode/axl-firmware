@@ -2,7 +2,7 @@
 
 Prebuilt UEFI firmware for QEMU: OVMF for X64 (`q35`) and ArmVirtQemu (AAVMF)
 for AARCH64 (`virt`), built from a pinned edk2 stable tag with QEMU's own build
-flags and four small patches, checked property by property, and published as one
+flags and five small patches, checked property by property, and published as one
 GitHub release per tag.
 
 No downloadable image has what the aximcode projects need: VirtioFsDxe and
@@ -20,7 +20,7 @@ finds the firmware: [docs/CONSUMERS.md](docs/CONSUMERS.md).
 
 ```sh
 git clone git@github.com:aximcode/axl-firmware.git && cd axl-firmware
-./build.sh install --from edk2-stable202611-r2
+./build.sh install --from edk2-stable202611-r3
 ```
 
 The repository is public: the download needs no login. It uses `gh` when it is
@@ -30,14 +30,14 @@ otherwise the plain release URL (`https://github.com/aximcode/axl-firmware/relea
 
 ```
 $XDG_DATA_HOME/axl-firmware/                     ($HOME/.local/share/axl-firmware by default)
-  edk2-stable202611-r2/                          the release, unpacked
+  edk2-stable202611-r3/                          the release, unpacked
     x64/{code.fd,vars.fd,Shell_X64.efi}          DEBUG (the default)
     aarch64/{code.fd,vars.fd,Shell_AARCH64.efi}  DEBUG
     release/x64/...  release/aarch64/...         RELEASE
     manifest.json  descriptors/  LICENSES/  patches/
   descriptors/                                   QEMU firmware descriptors, absolute paths
-    10-axl-firmware-edk2-stable202611-r2-{x64,aarch64}.json           DEBUG
-    20-axl-firmware-edk2-stable202611-r2-release-{x64,aarch64}.json   RELEASE
+    10-axl-firmware-edk2-stable202611-r3-{x64,aarch64}.json           DEBUG
+    20-axl-firmware-edk2-stable202611-r3-release-{x64,aarch64}.json   RELEASE
 ```
 
 `--prefix DIR` installs elsewhere; `--symbols` also unpacks the DEBUG symbols
@@ -47,7 +47,7 @@ descriptors (their files stay), so one release is advertised at a time.
 To boot it by hand:
 
 ```sh
-fw=$HOME/.local/share/axl-firmware/edk2-stable202611-r2/x64
+fw=$HOME/.local/share/axl-firmware/edk2-stable202611-r3/x64
 cp "$fw/vars.fd" /tmp/vars.fd
 qemu-system-x86_64 -machine q35 -m 1G -nographic \
   -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/code.fd" \
@@ -62,7 +62,7 @@ qemu-system-x86_64 -machine q35 -m 1G -nographic \
 | `axl-firmware-<release>-symbols-{x64,aarch64}.tar.xz` | the DEBUG build's `*.debug` files and FV maps, for gdb and crash decoders |
 | `SHA256SUMS` | the three tarballs' sha256 |
 
-A release tag is `<edk2 tag>-r<N>` (`edk2-stable202611-r2`). The exact format,
+A release tag is `<edk2 tag>-r<N>` (`edk2-stable202611-r3`). The exact format,
 every manifest field included, is [docs/RELEASE-FORMAT.md](docs/RELEASE-FORMAT.md).
 What each release is checked to hold, and how each check was shown to fail on a
 broken image, is [docs/PROPERTIES.md](docs/PROPERTIES.md).

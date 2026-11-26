@@ -1,0 +1,38 @@
+Subject: [PATCH] ArmVirtPkg: add PciSioSerialDxe to ArmVirtQemu
+
+Add MdeModulePkg's PciSioSerialDxe to ArmVirtQemu (DSC and FDF), so a
+16550 UART behind PCI, such as QEMU's pci-serial device on virt, gets
+an EFI_SERIAL_IO_PROTOCOL beside the PL011's. OvmfPkgX64 already
+builds it. The console is unchanged: the platform boot manager
+(PlatformBootManagerLibLight) adds only the PL011 and virtio serial
+devices to ConIn, ConOut and ErrOut, so the new port is a console only
+when a ConIn, ConOut or ErrOut variable names it.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0004-terminal-control-keys.patch to a copy of the packages it touches.
+
+---
+diff --git a/ArmVirtPkg/ArmVirtQemu.dsc b/ArmVirtPkg/ArmVirtQemu.dsc
+index bf27866..7967906 100644
+--- a/ArmVirtPkg/ArmVirtQemu.dsc
++++ b/ArmVirtPkg/ArmVirtQemu.dsc
+@@ -411,6 +411,7 @@
+   # PCI support
+   #
+   MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
++  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+ 
+   #
+   # Video support
+diff --git a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+index 6379116..2fb9dd5 100644
+--- a/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
++++ b/ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc
+@@ -184,6 +184,7 @@ READ_LOCK_STATUS   = TRUE
+   INF OvmfPkg/PciHotPlugInitDxe/PciHotPlugInit.inf
+   INF OvmfPkg/VirtioPciDeviceDxe/VirtioPciDeviceDxe.inf
+   INF OvmfPkg/Virtio10Dxe/Virtio10.inf
++  INF MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+ 
+   #
+   # Video support

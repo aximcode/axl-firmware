@@ -76,6 +76,32 @@ class WalkerTests(unittest.TestCase):
         )
 
 
+class DriverListTests(unittest.TestCase):
+    """The drivers each arch's images must hold, exactly."""
+
+    def test_each_arch(self) -> None:
+        common = [
+            "VirtioFsDxe", "VirtioGpuDxe", "VirtioRngDxe", "VirtioNetDxe", "VirtioBlkDxe", "VirtioScsiDxe",
+            "VirtioSerialDxe", "Ip6Dxe", "HttpDxe", "TlsDxe", "IScsiDxe", "MnpDxe", "Ip4Dxe", "TcpDxe",
+            "Dhcp4Dxe", "Tcg2Dxe", "UsbMouseDxe", "UsbMouseAbsolutePointerDxe", "QemuVideoDxe", "UiApp",
+            "Shell", "PciSioSerialDxe",
+        ]  # fmt: skip
+        self.assertEqual([d.name for d in checks.drivers("aarch64")], common)
+        self.assertEqual([d.name for d in checks.drivers("x64")], [*common, "SnpDxe", "Ps2MouseDxe"])
+
+    def test_pci_serial_on_both_arches(self) -> None:
+        # Patch 0005 adds it to ArmVirtQemu; OvmfPkgX64 always had it, by
+        # the same INF and so the same FILE_GUID.
+        pci = checks.Driver(
+            "PciSioSerialDxe",
+            "E2775B47-D453-4EE3-ADA7-391A1B05AC17",
+            "MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf",
+        )
+        for arch in checks.ARCHES:
+            with self.subTest(arch):
+                self.assertEqual([d for d in checks.drivers(arch) if d.name == "PciSioSerialDxe"], [pci])
+
+
 def _pe(machine: int, magic: int = 0x20B, subsystem: int = 10) -> bytes:
     data = bytearray(0x200)
     data[0:2] = b"MZ"
@@ -1533,6 +1559,8 @@ def _fake_tree(
         "format": fmt,
         "release": rel,
         "edk2": {"tag": tag, "commit": commit},
+        "default_flavour": "DEBUG",
+        "hardware_images": {"x64": "release/x64", "aarch64": "release/aarch64"},
         "images": images,
         "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in release.IMAGES],
         "licenses": ["LICENSES/edk2-License.txt"],
@@ -1970,10 +1998,21 @@ class ReleaseCheckTests(unittest.TestCase):
         def not_in_top(m: Manifest) -> None:
             m["licenses"] = ["LICENSES/other.txt"]
 
+        def hardware_debug(m: Manifest) -> None:
+            m["hardware_images"] = {"x64": "x64", "aarch64": "release/aarch64"}
+
+        def no_hardware(m: Manifest) -> None:
+            del m["hardware_images"]
+
         want = sorted(img.dir for img in release.IMAGES)
         cases: dict[str, tuple[Callable[[Manifest], None], str]] = {
             "moved": (moved, "FAIL: x64: the manifest's code is 'release/x64/code.fd', not 'x64/code.fd'\n"),
-            "empty": (empty, f"FAIL: manifest images [], not {want}\n"),
+            "empty": (
+                empty,
+                f"FAIL: manifest images [], not {want}\n"
+                "FAIL: hardware_images.x64: 'release/x64' is not an image of the release\n"
+                "FAIL: hardware_images.aarch64: 'release/aarch64' is not an image of the release\n",
+            ),
             "no edk2": (no_edk2, "FAIL: {m}: no edk2.tag\n"),
             "no code": (no_code, "FAIL: aarch64: the manifest's code is None, not 'aarch64/code.fd'\n"),
             "no licences": (no_licences, "FAIL: release/x64: licenses is None, not a list\n"),
@@ -1988,6 +2027,8 @@ class ReleaseCheckTests(unittest.TestCase):
                     for img in release.IMAGES
                 ),
             ),
+            "hardware DEBUG": (hardware_debug, "FAIL: hardware_images.x64: x64 is a DEBUG image, not RELEASE\n"),
+            "no hardware": (no_hardware, "FAIL: manifest: no hardware_images\n"),
         }
         for label, (tamper, text) in cases.items():
             with self.subTest(label):
@@ -1999,6 +2040,91 @@ class ReleaseCheckTests(unittest.TestCase):
         (top / "manifest.json").write_text("{")
         rc, err = self._check(top)
         self.assertEqual((rc, err.split(": ", 2)[:2]), (1, ["FAIL", str(top / "manifest.json")]))
+
+
+class HardwareImagesTests(unittest.TestCase):
+    """hardware_images: per arch, the RELEASE image a consumer ships to real hardware."""
+
+    IMAGES: Manifest = {
+        img.dir: {"arch": img.arch, "flavour": img.flavour, "code": {}} for img in release.IMAGES
+    }
+
+    def test_the_release_names_release_images(self) -> None:
+        self.assertEqual(release.HARDWARE_IMAGES, {"x64": "release/x64", "aarch64": "release/aarch64"})
+        self.assertEqual(release.check_hardware_images(release.HARDWARE_IMAGES, self.IMAGES), [])
+
+    def test_refused(self) -> None:
+        cases: dict[str, tuple[object, list[str]]] = {
+            "a DEBUG image": (
+                {"x64": "x64", "aarch64": "release/aarch64"},
+                ["hardware_images.x64: x64 is a DEBUG image, not RELEASE"],
+            ),
+            "both DEBUG": (
+                {"x64": "x64", "aarch64": "aarch64"},
+                [
+                    "hardware_images.x64: x64 is a DEBUG image, not RELEASE",
+                    "hardware_images.aarch64: aarch64 is a DEBUG image, not RELEASE",
+                ],
+            ),
+            "another arch's": (
+                {"x64": "release/aarch64", "aarch64": "release/aarch64"},
+                ["hardware_images.x64: release/aarch64 is an aarch64 image"],
+            ),
+            "a missing image": (
+                {"x64": "release/x86", "aarch64": "release/aarch64"},
+                ["hardware_images.x64: 'release/x86' is not an image of the release"],
+            ),
+            "not a string": (
+                {"x64": ["release/x64"], "aarch64": "release/aarch64"},
+                ["hardware_images.x64: ['release/x64'] is not an image of the release"],
+            ),
+            "an arch left out": (
+                {"x64": "release/x64"},
+                ["hardware_images: arches ['x64'], not ['aarch64', 'x64']"],
+            ),
+            "an arch too many": (
+                {"x64": "release/x64", "aarch64": "release/aarch64", "riscv64": "release/x64"},
+                [
+                    "hardware_images: arches ['aarch64', 'riscv64', 'x64'], not ['aarch64', 'x64']",
+                    "hardware_images.riscv64: release/x64 is an x64 image",
+                ],
+            ),
+            "not an object": (["release/x64"], ["hardware_images: ['release/x64'] is not an object"]),
+            "absent": (None, ["manifest: no hardware_images"]),
+        }
+        for label, (value, want) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(release.check_hardware_images(value, self.IMAGES), want)
+
+    def test_an_entry_not_an_object(self) -> None:
+        images: Manifest = {**self.IMAGES, "release/x64": "x"}
+        self.assertEqual(
+            release.check_hardware_images(release.HARDWARE_IMAGES, images),
+            ["hardware_images.x64: 'release/x64' is not an image of the release"],
+        )
+
+    def test_assemble_stops_on_a_hardware_image_problem(self) -> None:
+        # Checked with the static checks, before any boot.
+        a = release.AssembleArgs(
+            ws=Path("/nonexistent/ws"), src=Path("/nonexistent/src"), dist=Path("/nonexistent/dist"),
+            stage=Path(tempfile.mkdtemp()) / "stage", release="r", tag="t", commit="c", url="u", fixes=[],
+            toolchain="GCC", release_date="01/01/2026", compilers={}, defines={}, pcds={}, patches=[],
+            repo_commit="none", repo_dirty=0, built_by="local", qemu_dir=None,
+        )  # fmt: skip
+        self.addCleanup(shutil.rmtree, a.stage.parent)
+        err = io.StringIO()
+        with (
+            mock.patch.object(release, "HARDWARE_IMAGES", {"x64": "x64", "aarch64": "release/aarch64"}),
+            mock.patch.object(release, "stage_images", return_value=[]),
+            mock.patch.object(release, "static_checks", return_value=({}, [])),
+            mock.patch.object(release, "volinfo_checks", return_value=[]),
+            mock.patch.object(release, "isa_checks", return_value=({}, [])),
+            mock.patch.object(checks, "build_facts", return_value=({}, [])),
+            mock.patch.object(release, "boot_checks", side_effect=AssertionError("booted")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(release.assemble(a), 1)
+        self.assertEqual(err.getvalue(), "FAIL: hardware_images.x64: x64 is a DEBUG image, not RELEASE\n")
 
 
 class BuildShTests(unittest.TestCase):

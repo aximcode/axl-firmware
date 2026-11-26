@@ -92,7 +92,7 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
      Upstream added none of the patches' drivers, nor QemuVideoDxe on
      ArmVirtQemu, nor the write-combine PCD, so patches 0001 and 0002 stay
      whole, regenerated against 202611; 202611 needed a third, 0003 (§4.19),
-     and a fourth, 0004 (§4.21), in r2. Changes met: ArmVirtQemu's components and
+     and a fourth, 0004 (§4.21), in r2; r3 adds a fifth, 0005 (§4.26). Changes met: ArmVirtQemu's components and
      PCDs partly moved into `ArmVirt.dsc.inc`; VirtioKeyboardDxe is now
      VirtioInputDxe; `ArmVirtQemu.dsc` sets `PcdDebugPrintErrorLevel|0` for
      VirtioSerialDxe; ArmVirtQemu may dispatch an emulated variable store
@@ -566,6 +566,42 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     ring directly in gsource_check", 2026-02-13) with its companion
     2ae361ef1d, both first in QEMU v10.2.2. A fixed QEMU in CI is §5
     item 8.
+
+26. **Patch 0005, PciSioSerialDxe in ArmVirtQemu** (owner, 2026-11-25, for
+    r3). An AARCH64 guest given a PCI 16550 UART (QEMU's `-device
+    pci-serial,chardev=...`) gets a second EFI_SERIAL_IO_PROTOCOL beside
+    the PL011's, as an X64 guest already does: a consumer can talk to a
+    second serial line from UEFI on both arches. The patch adds
+    MdeModulePkg's `PciSioSerialDxe.inf` to `ArmVirtQemu.dsc` (after
+    PciHostBridgeDxe) and to `ArmVirtQemuFvMain.fdf.inc` (after the PCI
+    drivers), regenerated, like 0001, from copies before and after it.
+    `OvmfPkgX64` has always built the same INF, so the check's GUID
+    (`E2775B47-D453-4EE3-ADA7-391A1B05AC17`) moves from the X64-only list
+    to the common one (`checks.COMMON_DRIVERS`); the patch touches no
+    OvmfPkg or MdeModulePkg file, so X64 is built as in r2.
+    - *The console is unchanged.* Of the serial devices,
+      `PlatformBootManagerLibLight` (ArmVirtQemu's boot manager library)
+      adds only the PL011 (SerialDxe's vendor path) and virtio serial ports
+      to ConIn, ConOut and ErrOut; the PCI port is a console only when a
+      console variable names it. OVMF's X64 `PlatformBootManagerLib` adds a
+      PCI 16550 to the console itself (`IS_PCI_16550SERIAL`), as before.
+    - *Checked on every release* by the driver check (PROPERTIES.md), RED
+      with the patch removed.
+
+27. **`hardware_images` in the manifest** (owner, 2026-11-25, for r3). A
+    top-level map from each arch to the image directory a consumer ships
+    to real hardware: the Shell and firmware deployed onto physical
+    machines, where a DEBUG build's ASSERT (deadloop) can halt the box.
+    r3's is `{"x64": "release/x64", "aarch64": "release/aarch64"}`
+    (`release.HARDWARE_IMAGES`). `default_flavour` stays `DEBUG`: it says
+    what QEMU guests boot, and the descriptors' numbering still picks DEBUG.
+    Additive only: format stays 2 and no stable field changes
+    (RELEASE-FORMAT.md). SoftBMC will read it.
+    - *Checked* (`release.check_hardware_images`) before any boot, with the
+      static checks, and again by `build.sh check` on the packed manifest:
+      one entry per arch, exactly `x64` and `aarch64`; each naming one of
+      the manifest's images, of the entry's own arch, whose flavour is
+      `RELEASE`. Any other entry fails the release.
 
 ## 5. Open decisions (the owner's)
 

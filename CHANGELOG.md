@@ -2,6 +2,26 @@
 
 Each release is `<edk2 tag>-r<N>`; its section here is its release notes.
 
+## edk2-stable202611-r3
+
+A second serial port on AARCH64, and a manifest field naming the images
+for real hardware. Everything else is as in r2.
+
+- **`0005-pci-serial.patch`**: ArmVirtQemu now builds PciSioSerialDxe,
+  so an AARCH64 guest given a PCI 16550 UART (QEMU's `-device
+  pci-serial,chardev=...`) gets a second EFI_SERIAL_IO beside the
+  PL011's, as X64 guests already did. The console stays on the PL011:
+  the new port is a console only when a ConIn, ConOut or ErrOut variable
+  names it. X64 is built as in r2 (the patch touches only ArmVirtPkg).
+  The driver check now requires PciSioSerialDxe on both arches.
+- **`hardware_images`** in `manifest.json`: per arch, the image to ship
+  to real hardware, where a DEBUG build's ASSERT can halt the machine:
+  `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Checked: a
+  release whose entry names a missing image, another arch's, or one not
+  RELEASE is not packed. `default_flavour` stays `DEBUG`, and the
+  manifest stays format 2: nothing else in it changed.
+- Each new tag re-checks all five patches against upstream.
+
 ## edk2-stable202611-r2
 
 Two fixes for r1: a serial Ctrl-C reached the UEFI Shell no more, and

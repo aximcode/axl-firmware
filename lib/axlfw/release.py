@@ -88,6 +88,38 @@ class Image:
 
 
 IMAGES = tuple(Image(a, f) for f in checks.FLAVOURS for a in checks.ARCHES)
+# Per arch, the image a consumer ships to real hardware: the Shell and
+# firmware deployed onto physical machines, where a DEBUG build's ASSERT can
+# halt the box. Each must be its arch's RELEASE image (check_hardware_images;
+# DESIGN §4.27). default_flavour, what QEMU guests boot, stays DEBUG.
+HARDWARE_IMAGES = {"x64": "release/x64", "aarch64": "release/aarch64"}
+
+
+def check_hardware_images(value: object, images: dict[str, object]) -> list[str]:
+    """The manifest's hardware_images against its images: one per arch, RELEASE.
+
+    value is the field as the manifest holds it (None when absent); images
+    the manifest's images, each an object with its arch and flavour. Every
+    entry must name one of images, of the entry's own arch, whose flavour is
+    RELEASE; and there is one entry per arch.
+    """
+    if value is None:
+        return ["manifest: no hardware_images"]
+    hardware = install.json_object(value)
+    if hardware is None:
+        return [f"hardware_images: {value!r} is not an object"]
+    problems: list[str] = []
+    if sorted(hardware) != sorted(checks.ARCHES):
+        problems.append(f"hardware_images: arches {sorted(hardware)}, not {sorted(checks.ARCHES)}")
+    for arch, d in hardware.items():
+        entry = install.json_object(images.get(d)) if isinstance(d, str) else None
+        if entry is None:
+            problems.append(f"hardware_images.{arch}: {d!r} is not an image of the release")
+        elif entry.get("arch") != arch:
+            problems.append(f"hardware_images.{arch}: {d} is an {entry.get('arch')} image")
+        elif entry.get("flavour") != "RELEASE":
+            problems.append(f"hardware_images.{arch}: {d} is a {entry.get('flavour')} image, not RELEASE")
+    return problems
 
 
 def sha256(path: Path) -> str:
@@ -388,6 +420,9 @@ def assemble(a: AssembleArgs) -> int:
     problems += volinfo_checks(a.ws, a.toolchain, stage)
     scanned, more = isa_checks(a.ws, a.src, a.toolchain)
     problems += more
+    problems += check_hardware_images(
+        HARDWARE_IMAGES, {img.dir: {"arch": img.arch, "flavour": img.flavour} for img in IMAGES}
+    )
     debug: dict[str, dict[str, object]] = {}
     for img in IMAGES:
         facts, more = checks.build_facts(img.build(a.ws, a.toolchain), img.arch, img.flavour)
@@ -498,6 +533,7 @@ def assemble(a: AssembleArgs) -> int:
         "toolchain": a.toolchain,
         "compilers": a.compilers,
         "default_flavour": "DEBUG",
+        "hardware_images": dict(HARDWARE_IMAGES),
         "images": images,
         "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in IMAGES],
         "symbols": symbols,
@@ -595,6 +631,7 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
         problems.append(f"manifest format {manifest.get('format')!r}, not {FORMAT}")
     if sorted(images) != sorted(img.dir for img in IMAGES):
         problems.append(f"manifest images {sorted(images)}, not {sorted(img.dir for img in IMAGES)}")
+    problems += check_hardware_images(manifest.get("hardware_images"), images)
     for img in IMAGES:
         if img.dir not in images:
             continue  # said above

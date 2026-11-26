@@ -35,7 +35,7 @@ descriptor's `executable`.
 |---|---|
 | axlvmpool | Its discovery searches the descriptors as above (the neutral path first), checks the drivers, and records the choice. `axlvmpool firmware --arch <X64\|AARCH64> [--json]` prints `code`, `vars` and how they were chosen: **the resolver for every other consumer when axlvmpool is installed.** `axlvmpool setup` will download a release. |
 | axl-sdk | `find_firmware` asks `axlvmpool firmware` when axlvmpool is installed, else applies the same descriptor rule itself. `axl firmware install` fetches a release by tag and pinned sha256 through its own toolchain installer, so SDK users need not have axlvmpool. The DEBUG X64 image is the debug OVMF its `find_debug_ovmf` needs (DESIGN §5, item 1), and the symbols tarballs serve `gdb-syms.py` and rsod-decode. |
-| SoftBMC | The installed release's `Shell_<ARCH>.efi` and images, through the descriptors or `axlvmpool firmware`. |
+| SoftBMC | The installed release's `Shell_<ARCH>.efi` and images, through the descriptors or `axlvmpool firmware`; for physical machines, the images `hardware_images` names (RELEASE, from r3). |
 | AGT | The DEBUG images (quiet AARCH64, X64 at 1280x800) through the descriptors. |
 | A downstream diagnostics project | A release fetched by tag and pinned sha256, typically RELEASE, with `bochs-display` on AARCH64 and the SMBIOS BIOS version reading the edk2 tag. |
 
@@ -45,7 +45,7 @@ Pin both the release tag and its tarball's sha256 in the consumer, as
 rust-osdev's ovmf-prebuilt does:
 
 ```sh
-./build.sh install --from edk2-stable202611-r2 --sha256 <the tarball's sha256>
+./build.sh install --from edk2-stable202611-r3 --sha256 <the tarball's sha256>
 ```
 
 Without `--sha256`, the install trusts the release's own `SHA256SUMS`. With a

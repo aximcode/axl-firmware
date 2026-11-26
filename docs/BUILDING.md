@@ -131,9 +131,9 @@ what was found.
    define of QEMU's flags still referenced; `OUTPUT_DIRECTORY`; the
    `PcdDebugPropertyMask` and `PcdDebugPrintErrorLevel` values; whether
    upstream now has anything a patch adds. Record each finding in DESIGN.md.
-3. **Re-check, then rebase, each patch** (all four: 0001 pointer drivers,
+3. **Re-check, then rebase, each patch** (all five: 0001 pointer drivers,
    0002 bochs-display video, 0003 the debug UART's PEI mapping, 0004
-   TerminalDxe's control keys). First check whether upstream has fixed or
+   TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu). First check whether upstream has fixed or
    added what it does by the new tag; if so, drop the patch (or the part),
    and say so in CHANGELOG.md and DESIGN.md. For 0004, read
    `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and

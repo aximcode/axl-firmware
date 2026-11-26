@@ -52,17 +52,20 @@ COMMON_DRIVERS = (
     Driver("QemuVideoDxe", "E3752948-B9A1-4770-90C4-DF41C38986BE", "OvmfPkg/QemuVideoDxe/QemuVideoDxe.inf"),
     Driver("UiApp", "462CAA21-7614-4503-836E-8AB6F4662331", "MdeModulePkg/Application/UiApp/UiApp.inf"),
     Driver("Shell", "7C04A583-9E3E-4F1C-AD65-E05268D0B4D1", "ShellPkg/ShellPkg.dec:gUefiShellFileGuid"),
-)
-# X64 only: the PC serial port; the PS/2 mouse; SnpDxe, which ArmVirtQemu
-# does not build (its NICs are virtio-net, whose VirtioNetDxe produces SNP
-# itself; SnpDxe serves UNDI option ROMs).
-X64_DRIVERS = (
-    Driver("SnpDxe", "A2F436EA-A127-4EF8-957C-8048606FF670", "NetworkPkg/SnpDxe/SnpDxe.inf"),
+    # A 16550 UART's EFI_SERIAL_IO: on X64 the PC's COM ports (through
+    # SioBusDxe) and PCI serial; on AARCH64 (patch 0005) PCI serial, such as
+    # QEMU's pci-serial, beside the PL011.
     Driver(
         "PciSioSerialDxe",
         "E2775B47-D453-4EE3-ADA7-391A1B05AC17",
         "MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf",
     ),
+)
+# X64 only: SnpDxe, which ArmVirtQemu does not build (its NICs are
+# virtio-net, whose VirtioNetDxe produces SNP itself; SnpDxe serves UNDI
+# option ROMs); the PS/2 mouse.
+X64_DRIVERS = (
+    Driver("SnpDxe", "A2F436EA-A127-4EF8-957C-8048606FF670", "NetworkPkg/SnpDxe/SnpDxe.inf"),
     Driver("Ps2MouseDxe", "08464531-4C99-4C4C-A887-8D8BA4BBB063", "MdeModulePkg/Bus/Isa/Ps2MouseDxe/Ps2MouseDxe.inf"),
 )
 # Files no image may hold: Secure Boot's configuration driver, built only
