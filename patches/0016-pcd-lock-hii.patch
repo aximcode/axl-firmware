@@ -16,12 +16,13 @@ reading PcdTcgPhysicalPresenceInterfaceVer with a TPM attached: the
 heap-guarded DEBUG image never reached BDS.
 
 GetWorker() and SetWorker() now release the lock around the variable
-call and make the call under a lock of its own, mPcdHiiVariableLock (TPL_NOTIFY,
-taken before mPcdDatabaseLock, never after), so HII variable reads and
-writes stay serialized as they were: two Sets of PCDs sharing a variable
-cannot interleave their read-modify-write, nor a Get's copy into a
-default buffer with the defaults SetHiiVariable() reads for a new
-variable. The heap guard's re-entry gets a Data PCD and takes only
+call and make the call under a lock of its own, mPcdHiiVariableLock
+(TPL_NOTIFY, taken before mPcdDatabaseLock, never after), so HII
+variable reads and writes stay serialized as they were. SetWorker()
+holds it for the whole Set, so a pointer-type PCD's new size and its
+variable are seen together, two Sets of PCDs sharing a variable cannot
+interleave their read-modify-write, and no Get copies into a default
+buffer while SetHiiVariable() reads the defaults for a new variable. The heap guard's re-entry gets a Data PCD and takes only
 mPcdDatabaseLock. GetWorker() takes mPcdDatabaseLock again for the
 pointer-type size and the copy into the default buffer, and frees the
 variable's buffer after releasing both (a buffer a failed second
@@ -129,7 +130,7 @@ index 0e37081..7e094bb 100644
  }
  
 diff --git a/MdeModulePkg/Universal/PCD/Dxe/Service.c b/MdeModulePkg/Universal/PCD/Dxe/Service.c
-index 761f422..6527f8c 100644
+index 761f422..6913368 100644
 --- a/MdeModulePkg/Universal/PCD/Dxe/Service.c
 +++ b/MdeModulePkg/Universal/PCD/Dxe/Service.c
 @@ -389,13 +389,16 @@ GetWorker (
@@ -264,26 +265,46 @@ index 761f422..6527f8c 100644
  
        return EFI_SUCCESS;
      }
-@@ -1242,7 +1274,18 @@ SetWorker (
+@@ -1180,8 +1212,11 @@ SetWorker (
+   }
+ 
+   //
+-  // Aquire lock to prevent reentrance from TPL_CALLBACK level
++  // Aquire lock to prevent reentrance from TPL_CALLBACK level. An HII PCD's
++  // variable is written under mPcdHiiVariableLock alone (see the HII case
++  // below), which is taken first and held for the whole Set.
+   //
++  EfiAcquireLock (&mPcdHiiVariableLock);
+   EfiAcquireLock (&mPcdDatabaseLock);
+ 
+   //
+@@ -1242,7 +1277,17 @@ SetWorker (
        Name           = (UINT16 *)(StringTable + VariableHead->StringIndex);
        VariableOffset = VariableHead->Offset;
        Attributes     = VariableHead->Attributes;
 -      Status         = SetHiiVariable (Guid, Name, Attributes, Data, *Size, VariableOffset);
 +      //
 +      // SetHiiVariable() allocates and frees memory: under
-+      // mPcdHiiVariableLock alone, as in GetWorker(), so that two Sets of
-+      // PCDs sharing a variable still cannot interleave their read and
-+      // write of it, nor a Get's copy into a default buffer with the
-+      // default values SetHiiVariable() reads when the variable is new.
++      // mPcdHiiVariableLock alone, as in GetWorker(). That lock is held
++      // for the whole Set, so the size set above and the variable written
++      // here are seen together, two Sets of PCDs sharing a variable cannot
++      // interleave their read and write of it, and no Get copies into a
++      // default buffer while SetHiiVariable() reads the defaults.
 +      //
 +      EfiReleaseLock (&mPcdDatabaseLock);
-+      EfiAcquireLock (&mPcdHiiVariableLock);
 +      Status = SetHiiVariable (Guid, Name, Attributes, Data, *Size, VariableOffset);
-+      EfiReleaseLock (&mPcdHiiVariableLock);
 +      EfiAcquireLock (&mPcdDatabaseLock);
        break;
  
      case PCD_TYPE_DATA:
+@@ -1290,6 +1335,7 @@ SetWorker (
+   }
+ 
+   EfiReleaseLock (&mPcdDatabaseLock);
++  EfiReleaseLock (&mPcdHiiVariableLock);
+ 
+   return Status;
+ }
 diff --git a/MdeModulePkg/Universal/PCD/Dxe/Service.h b/MdeModulePkg/Universal/PCD/Dxe/Service.h
 index f415504..fe76109 100644
 --- a/MdeModulePkg/Universal/PCD/Dxe/Service.h

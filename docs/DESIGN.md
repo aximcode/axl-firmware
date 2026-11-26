@@ -1420,9 +1420,11 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       `mPcdDatabaseLock` around the variable call and make it under a lock
       of its own, `mPcdHiiVariableLock` (TPL_NOTIFY; taken before
       `mPcdDatabaseLock`, never after), so HII variable reads and writes
-      stay serialized as before: two Sets of PCDs sharing a variable cannot
-      interleave their read-modify-write, nor a Get's copy into a default
-      buffer with the defaults `SetHiiVariable()` reads for a new variable.
+      stay serialized as before. `SetWorker()` holds it for the whole Set,
+      so a pointer-type PCD's new size and its variable are seen together,
+      two Sets of PCDs sharing a variable cannot interleave their
+      read-modify-write, and no Get copies into a default buffer while
+      `SetHiiVariable()` reads the defaults for a new variable.
       The heap guard's re-entry gets a Data PCD and takes only
       `mPcdDatabaseLock`. `GetWorker()` takes `mPcdDatabaseLock` again for
       the pointer-type size (`GetPtrTypeSize`) and the copy into the default
@@ -1443,8 +1445,12 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       sharing the variable interleave with a lower one's read-modify-write
       and be lost, let `SetHiiVariable()`'s defaults read race a Get's
       copy, and moved the variable calls off TPL_NOTIFY; the HII lock above
-      closes all three. Nothing else found: no allocation left under the
-      lock, no leak or double free, lock paths balanced.
+      closes all three. Its re-review found a Get could still see a
+      pointer-type Set's new size before its variable was written: closed
+      by holding the HII lock for the whole Set. Nothing else found: no
+      allocation left under the lock, no leak or double free, lock paths
+      balanced and last-in first-out, the heap guard's re-entry (a Data
+      PCD) taking only the free database lock.
     - *RED*: the integration build (`632a056`, without 0016): X64
       GUARDED's TPM boot, no Shell within 180 s, the ASSERT above on
       debugcon. That build is also the sabotage (the tree less 0016): it
