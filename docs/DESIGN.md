@@ -624,6 +624,10 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       makefiles (a response file for the longer path, another object
       order) carry; RELEASE's PciSioSerialDxe.efi is identical in both.
       r3's text modes equal r2's on all four image sets.
+    - *No boot check for the second SerialIo* (owner, 2026-11-25): the static
+      driver check stays the release's permanent guard, as for patch 0001's
+      drivers; the boot above is the one-time proof. A per-release
+      `pci-serial` boot (one more boot per image set) was offered and declined.
 
 27. **`hardware_images` in the manifest** (owner, 2026-11-25, for r3). A
     top-level map from each arch to the image directory a consumer ships
