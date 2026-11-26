@@ -53,13 +53,15 @@ jobs:
         with:
           persist-credentials: false
       # swtpm: the TPM boot check's TPM (lib/axlfw/tpm.py); without it the
-      # boot checks fail, never skip.
-      - name: Install the build, QEMU and swtpm
+      # boot checks fail, never skip. virtiofsd (universe, at
+      # /usr/libexec/virtiofsd): the virtio-fs boot check's share
+      # (lib/axlfw/netfs.py), required here by AXLFW_REQUIRE_VIRTIOFS.
+      - name: Install the build, QEMU, swtpm and virtiofsd
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential uuid-dev nasm \
             acpica-tools gcc-aarch64-linux-gnu python3-venv xz-utils git \
-            qemu-system-x86 qemu-system-arm swtpm
+            qemu-system-x86 qemu-system-arm swtpm virtiofsd
       - name: KVM for the X64 boots, where the runner has it
         run: |
           if [ -e /dev/kvm ]; then
@@ -80,7 +82,8 @@ jobs:
           sudo sysctl -w kernel.io_uring_disabled=2
           sysctl kernel.io_uring_disabled
           [ "$(sysctl -n kernel.io_uring_disabled)" = 2 ]
-          dpkg-query -W qemu-system-x86 qemu-system-arm swtpm
+          dpkg-query -W qemu-system-x86 qemu-system-arm swtpm virtiofsd
+          /usr/libexec/virtiofsd --version
           qemu-system-x86_64 --version
           qemu-system-aarch64 --version
       - name: The edk2 source, cached by its pinned commit
@@ -93,7 +96,7 @@ jobs:
           rel=$(sed -n 's/^tag="\(.*\)"$/\1/p' build.sh)-r$(sed -n 's/^revision=//p' build.sh)
           echo "RELEASE=$rel" >>"$GITHUB_ENV"
       - name: Build, check and pack
-        run: JOBS=4 AXLFW_BOOT_JOBS=2 ./build.sh build
+        run: JOBS=4 AXLFW_BOOT_JOBS=2 AXLFW_REQUIRE_VIRTIOFS=1 ./build.sh build
       # The source checks and the installed images must run here; only the
       # distribution controls (Fedora/EL paths) may skip, and run locally.
       - name: The no-build tests, with the source and the build's install
