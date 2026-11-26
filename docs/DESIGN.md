@@ -1372,7 +1372,27 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       | reconnect without an RNG instruction (0015; the build's boot check) | x64, aarch64 | GREEN on all six sets | five "Failed to locate EFI_RNG_PROTOCOL" lines and no ASSERT in each DEBUG and GUARDED debug log; DHCP lease after |
       | `tcp` and `vfs` boot checks (§4.39; the build's) | x64, aarch64 | GREEN on the four default sets | `tcphold: received 6 bytes` twice per boot; `vfsrace: PASS` cb=1000 |
 
-    - *Unchanged from r2*: the text modes measured on every set
+    - *The final build* (`557d3e2`, with 0016; same platform and settings):
+      every static and boot check passed on all six image sets, packed;
+      `build.sh check` on the tarball unpacked: every check passed; the
+      tarball installed into a scratch `XDG_DATA_HOME` and
+      `tests/firmware-tests.sh` run with `AXL_FIRMWARE_REQUIRE="source
+      installed"`: all passed, every installed set (the four and both
+      GUARDED) holding every driver checked. Tarball sha256
+      `51e0c85dad209ce9efd7d7427733e7aac45d0acc8ac3014a861fb9dad652659c`
+      (12,527,228 bytes); symbols x64 `879119325e45…a1ea05`, aarch64
+      `98a4ffe2e2bf…c3ae871`. The rows 0016 touches, on it:
+
+      | Reproducer | Sets | Verdict | Observed |
+      |---|---|---|---|
+      | TPM PCR read (the build's boot check) | all six | GREEN | `PcrRead.efi` printed 8 PCRs and `done` on each; `measured.tpm` `shell` and `pcrs_read` true on each, X64 GUARDED included (RED before 0016) |
+      | guard-overrun (the build's boot check) | DEBUG and GUARDED, both arches | GREEN | GUARDED X64 `#PF` `W:1 P:0` in `Overrun.dll`, AARCH64 `Synchronous Exception` with `Overrun.dll` first: `measured.pool_overrun` `fault`; DEBUG `written, no fault`: `silent` |
+
+      The other rows' boot checks (reconnect, `tcp`, `vfs`) passed on it
+      too (`measured.reconnect_network`, `tcp_reconnect`, `vfs_race`
+      `pass`); the console, `repro.py` and idle reproducers above ran on
+      the integration build, which differs only by 0016 (PcdDxe).
+
       (`serial`, `std-vga`, `virtio-gpu`, `bochs-display`, read from the
       boots' transcripts) equal r2's manifest's, GUARDED's equal DEBUG's;
       the X64 (and AARCH64) GOP is 1280x800 (std-VGA and bochs-display,
@@ -1455,7 +1475,9 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       GUARDED's TPM boot, no Shell within 180 s, the ASSERT above on
       debugcon. That build is also the sabotage (the tree less 0016): it
       failed exactly that boot and nothing else; so did the 0013 sabotage
-      build, beside its four TCP boots. *GREEN*: §4.40's final build.
+      build, beside its four TCP boots. *GREEN*: §4.40's final build
+      (`557d3e2`): X64 GUARDED's TPM boot reached the Shell and read PCRs
+      0-7, and every other check passed.
     - *Not upstream* as of the tag; a candidate to send.
 
 ## 5. Open decisions (the owner's)
