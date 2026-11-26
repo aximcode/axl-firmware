@@ -1,0 +1,26 @@
+[Defines]
+  INF_VERSION    = 1.29
+  BASE_NAME      = VfsRace
+  FILE_GUID      = 5e0c2b7a-1d4f-4a8e-9c3b-6f2d8e1a0b57
+  MODULE_TYPE    = UEFI_APPLICATION
+  ENTRY_POINT    = VfsRaceMain
+
+[Sources]
+  VfsRace.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  UefiBootServicesTableLib
+
+[Protocols]
+  gEfiLoadedImageProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+
+[Guids]
+  gEfiFileInfoGuid

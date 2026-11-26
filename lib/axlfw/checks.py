@@ -257,7 +257,8 @@ def source_guids(src: Path) -> list[str]:
 
 # --- r3 console: each patch applied and compiled (DESIGN §4.28) -------------
 # Every patch the release carries, by file name: a build that did not apply
-# one fails (check_patches). Other r3 patches add their names here.
+# one fails (check_patches). Every file in patches/ is named here (a unit
+# test holds the two equal).
 REQUIRED_PATCHES = (
     "0001-pointer-drivers.patch",
     "0002-bochs-display-video.patch",
@@ -269,6 +270,9 @@ REQUIRED_PATCHES = (
     "0008-terminal-widechar.patch",
     "0009-shell-delete-absent.patch",
     "0010-virtio-mouse-wheel.patch",
+    "0011-virtiofs-tpl.patch",
+    "0012-localapic-eoi.patch",
+    "0013-tcp-clone-child.patch",
 )
 # The files a compiler reads: these must be compiled from the patched copy.
 _COMPILED = (".c", ".h", ".S", ".nasm", ".asm")

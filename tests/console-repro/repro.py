@@ -8,7 +8,7 @@ that is the fixed behaviour.
 DIR for --release is an unpacked or installed release (r2's install, or a
 build's work/stage/axl-firmware-<release>); --probe the build directory of
 AxlConsoleReproPkg (Build/AxlConsoleRepro/RELEASE_GCC, holding X64/ and
-AARCH64/Probe.efi, built by build-probe.sh beside this file). The items (DESIGN §4.28-4.30):
+AARCH64/Probe.efi, built by build-probe.sh beside this file). The items (DESIGN §4.26, §4.28, §4.29):
 
     ps2-mouse        x64: a SimplePointer at Acpi(PNP0F03,0x0), and three
                      `mouse_move 10 5` reaching it (patch 0006)

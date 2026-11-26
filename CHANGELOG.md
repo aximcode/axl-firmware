@@ -47,6 +47,24 @@ for real hardware. Everything else is as in r2.
   manifest stays format 2: no existing field was removed or reshaped
   (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
+- **`0011-virtiofs-tpl.patch`**: VirtioFsDxe serializes its file
+  protocols at TPL_CALLBACK, as FAT does. A timer or event callback that
+  read a virtio-fs file while the Shell (or anything at a lower TPL) was
+  in a file call on the same kind of volume could hang the guest or
+  overwrite the other call's request; now one call waits for the other.
+  A caller above TPL_CALLBACK, outside the UEFI spec, now ASSERTs on
+  DEBUG, as it does with FAT.
+- **`0012-localapic-eoi.patch`**: each local APIC register access, the
+  timer's EOI on every tick among them, reads the APIC base MSR once,
+  not twice. An idle X64 guest under KVM exits about 420 times a second
+  fewer (about 1,340 to 910 on an Intel host). Behaviour is unchanged,
+  TDX included.
+- **`0013-tcp-clone-child.patch`**: a Shell `reconnect -r`, or a NIC
+  disconnect, while a resident server holds an accepted TCP connection
+  returns, where it hung forever; the accepted connection is destroyed
+  with its listener (its pending tokens complete with an error, and the
+  peer is not told). A listener at its backlog no longer leaks a
+  reference that caused the same hang.
 - Each new tag re-checks every patch against upstream.
 
 ## edk2-stable202611-r2

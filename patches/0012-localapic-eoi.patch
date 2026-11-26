@@ -1,0 +1,111 @@
+Subject: [PATCH] UefiCpuPkg/BaseXApicX2ApicLib: one APIC base MSR read per register access
+
+ReadLocalApicReg() and WriteLocalApicReg() called GetApicMode() and,
+in xAPIC mode, GetLocalApicBaseAddress(). Each of those checks the CPU
+family with CPUID, then reads MSR_IA32_APIC_BASE through
+LocalApicReadMsrReg64(), whose AccessMsrTdxCall() runs TdIsEnabled()'s
+CPUID probes first. In a virtual machine every CPUID and RDMSR exits.
+OVMF's LocalApicTimerDxe sends an EOI on every timer tick, so an idle
+guest under KVM on an Intel host spends 6 CPUID and 2 RDMSR exits a
+tick on it.
+
+GetApicModeAndXApicBase() takes the mode and the xAPIC base from one
+read of the MSR, and the two register accessors use it: 3 CPUID and 1
+RDMSR an access. The MSR is still read through LocalApicReadMsrReg64(),
+so under TDX it is still a TDVMCALL. GetApicMode() and
+GetLocalApicBaseAddress() are unchanged.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0011-virtiofs-tpl.patch to a copy of the packages it touches.
+
+---
+diff --git a/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c b/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
+index b0e77f7..7c3874e 100644
+--- a/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
++++ b/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
+@@ -228,6 +228,55 @@ GetLocalApicBaseAddress (
+          (((UINTN)ApicBaseMsr.Bits.ApicBase) << 12);
+ }
+ 
++/**
++  Retrieve the current local APIC mode and, in xAPIC mode, the base address of
++  the local APIC, from one read of the Local APIC Base Address MSR.
++
++  ReadLocalApicReg() and WriteLocalApicReg() need both for every access, and
++  each of GetApicMode() and GetLocalApicBaseAddress() reads the MSR afresh,
++  after its own CPUID family check (and, on X64, the CPUID probes of
++  TdIsEnabled(), under TDX a TDVMCALL for the MSR). Every one of those exits a
++  virtual machine, and the timer's SendApicEoi() runs on every tick.
++
++  If local APIC is disabled, then ASSERT.
++
++  @param[out] BaseAddress  In xAPIC mode, the base address of local APIC.
++                           Not written in x2APIC mode.
++
++  @retval LOCAL_APIC_MODE_XAPIC  current APIC mode is xAPIC.
++  @retval LOCAL_APIC_MODE_X2APIC current APIC mode is x2APIC.
++**/
++STATIC
++UINTN
++GetApicModeAndXApicBase (
++  OUT UINTN  *BaseAddress
++  )
++{
++  MSR_IA32_APIC_BASE_REGISTER  ApicBaseMsr;
++
++  if (!LocalApicBaseAddressMsrSupported ()) {
++    //
++    // As GetApicMode() and GetLocalApicBaseAddress(): xAPIC mode, at the
++    // base address from the PCD.
++    //
++    *BaseAddress = PcdGet32 (PcdCpuLocalApicBaseAddress);
++    return LOCAL_APIC_MODE_XAPIC;
++  }
++
++  ApicBaseMsr.Uint64 = LocalApicReadMsrReg64 (MSR_IA32_APIC_BASE);
++  //
++  // Local APIC should have been enabled
++  //
++  ASSERT (ApicBaseMsr.Bits.EN != 0);
++  if (ApicBaseMsr.Bits.EXTD != 0) {
++    return LOCAL_APIC_MODE_X2APIC;
++  }
++
++  *BaseAddress = (UINTN)(LShiftU64 ((UINT64)ApicBaseMsr.Bits.ApicBaseHi, 32)) +
++                 (((UINTN)ApicBaseMsr.Bits.ApicBase) << 12);
++  return LOCAL_APIC_MODE_XAPIC;
++}
++
+ /**
+   Set the base address of local APIC.
+ 
+@@ -281,11 +330,12 @@ ReadLocalApicReg (
+   )
+ {
+   UINT32  MsrIndex;
++  UINTN   BaseAddress;
+ 
+   ASSERT ((MmioOffset & 0xf) == 0);
+ 
+-  if (GetApicMode () == LOCAL_APIC_MODE_XAPIC) {
+-    return MmioRead32 (GetLocalApicBaseAddress () + MmioOffset);
++  if (GetApicModeAndXApicBase (&BaseAddress) == LOCAL_APIC_MODE_XAPIC) {
++    return MmioRead32 (BaseAddress + MmioOffset);
+   } else {
+     //
+     // DFR is not supported in x2APIC mode.
+@@ -324,11 +374,12 @@ WriteLocalApicReg (
+   )
+ {
+   UINT32  MsrIndex;
++  UINTN   BaseAddress;
+ 
+   ASSERT ((MmioOffset & 0xf) == 0);
+ 
+-  if (GetApicMode () == LOCAL_APIC_MODE_XAPIC) {
+-    MmioWrite32 (GetLocalApicBaseAddress () + MmioOffset, Value);
++  if (GetApicModeAndXApicBase (&BaseAddress) == LOCAL_APIC_MODE_XAPIC) {
++    MmioWrite32 (BaseAddress + MmioOffset, Value);
+   } else {
+     //
+     // DFR is not supported in x2APIC mode.

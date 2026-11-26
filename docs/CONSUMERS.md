@@ -96,6 +96,19 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   written by r2 or earlier keeps its VT100 ConOut entry beside the new VT-UTF8
   one; the terminal ends up VT-UTF8 all the same (measured), but start from
   the release's `vars.fd` to drop it.
+- **`reconnect -r` on AARCH64 needs an RNG that is not virtio.** With
+  `-cpu cortex-a57` (no RNDR) the network stack's only RNG is
+  `virtio-rng-pci`, which `reconnect -r` stops too; Ip4Dxe then starts
+  before it and a DEBUG image ASSERTs (`DxeNetLib.c(944)`). Use `-cpu max`
+  (RNDR) on AARCH64 if a guest reconnects; X64 under KVM has RDRAND.
+- **From r3, `reconnect -r` with an accepted TCP connection returns**
+  (patch 0013): the connection is destroyed with its listener, its tokens
+  complete EFI_ABORTED, and the peer is not told. A resident server's
+  workaround (a decoy binding that destroys connections in Stop) is no
+  longer needed on r3.
+- **From r3, virtio-fs file calls are serialized at TPL_CALLBACK**
+  (patch 0011), as FAT's are: file I/O from a timer or event callback is
+  safe beside the Shell's; a call above TPL_CALLBACK ASSERTs on DEBUG.
 - **No Shell fallback.** With no bootable disk, the firmware does not start the
   embedded Shell; boot your own disk, or put `Shell_<ARCH>.efi` on it.
 

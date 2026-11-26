@@ -741,8 +741,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       DEL as Delete), each check mutated away in turn, RED. Control: r2
       (above). Sabotage: the build without 0007 (PROPERTIES.md).
     - *The patch check* (`checks.check_patches`, with the static checks,
-      before any boot). Every name in `checks.REQUIRED_PATCHES` (0001-0010;
-      other r3 patches add theirs) must be among the patches the build
+      before any boot). Every name in `checks.REQUIRED_PATCHES` (every file in
+      `patches/`, a unit test holds the two equal) must be among the patches the build
       applied; each file the patches touch must be, in the workspace's
       patched copy (`ws/overlay`), the source's with the patches applied;
       and each patched C, header or
@@ -792,6 +792,122 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       variable.
     - *Checked* by the `ctrl-s` boot's DEL (§4.28) on all four image sets:
       RED on r2's AARCH64 images (`abXc`).
+30. **Patch 0011, VirtioFsDxe serialized at TPL_CALLBACK** (owner,
+    2026-11-25, for r3; inventory item 1). No VirtioFsDxe entry point
+    raised the TPL, and every request shares one virtqueue:
+    `VirtioPrepare()` starts each chain at descriptor 0 and `VirtioFlush()`
+    waits for the used index to equal the one it published. A
+    TPL_CALLBACK caller (a timer, a resident driver's tick) doing file I/O
+    while a lower-TPL call is mid-request overwrites that request's
+    descriptors or carries the used index past it, and the lower call
+    polls forever (axl-sdk's console-device-hold hang, its
+    AXL-Test-Guest-Pool-Design.md "The share cannot take a read from a
+    timer callback").
+    - *EFI_LOCK, not a bare RaiseTPL*, as EnhancedFatDxe does (FatFsLock):
+      one driver-global `mVirtioFsLock` at TPL_CALLBACK, taken by a wrapper
+      around each of the eleven member functions a protocol instance
+      carries (`SimpleFsLock.c`); the functions behind the wrappers call
+      one another unlocked (Open() calls OpenVolume()). The lock's ASSERT
+      on a second acquire would expose any re-entry the TPL raise allows
+      (none was found). Stop() follows FAT too: it checks for open files
+      under the lock, uninstalls the protocol without it (an uninstall may
+      run other drivers' Stop or Start, which may call in), and checks again
+      under the lock before freeing the device; if a stale holder opened a
+      file in between, it reinstalls the protocol and connects again the
+      drivers the uninstall disconnected, as the core does when an
+      uninstall fails (both from the reviews).
+    - *What changes for callers*: a file call above TPL_CALLBACK (outside
+      the UEFI spec) now ASSERTs in DEBUG, as on FAT; a long Read or Write
+      holds TPL_CALLBACK work (timers, network DPCs) off for its duration,
+      as on FAT.
+    - *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0, virtiofsd 1.13.3; X64
+      under KVM, AARCH64 under TCG `cortex-a57`) with
+      `tests/repro/repro.py vfs`: VfsRace.efi, run from the share, reads a
+      3000-byte file whole (open volume, open, read, GetInfo, close both)
+      in a loop, while a 1 ms periodic timer at TPL_CALLBACK does the same
+      (OVMF's 10 ms tick makes it 100 rounds a second), until the timer
+      has done 1000 rounds; every read must equal the first. r2, DEBUG:
+      X64 hung within the first 2000 foreground rounds in each of the two
+      runs (no progress line after `racing 1000 timer rounds`; frame chain
+      VfsRace -> VirtioFsDxe (3 frames) -> DxeCore -> Metronome, the
+      `Stall` in VirtioFlush's poll); AARCH64 hung the same way; r2
+      RELEASE hung as well, X64 and AARCH64. r3, all four image sets: `vfsrace: PASS`,
+      cb=1000, in 10.1-10.2 s (fg 5615-36839 rounds), no ASSERT in the
+      DEBUG logs. Stop() and Start(): a `reconnect -r` after the race
+      (X64 and AARCH64 DEBUG) stopped and restarted the share (X64's log
+      shows SimpleFileSystem installed 4 times, not 2) and it listed
+      race.txt again, without an ASSERT.
+
+31. **Patch 0012, one APIC base MSR read per LocalApic register access**
+    (owner, 2026-11-25, for r3; inventory item 15). Shape as axl-sdk
+    drafted it (its AXL-Test-Guest-Pool-Design.md, "drafted, not sent";
+    no diff existed): `ReadLocalApicReg`/`WriteLocalApicReg` take the mode
+    and the xAPIC base from one `LocalApicReadMsrReg64 (MSR_IA32_APIC_BASE)`
+    (`GetApicModeAndXApicBase`), so `SendApicEoi` costs 3 CPUID and 1
+    RDMSR, not 6 and 2. The read still goes through
+    `LocalApicReadMsrReg64`, so under TDX it is still a TDVMCALL; nothing
+    is cached (the library is linked into SEC, PEI and SMM too), and
+    `GetApicMode`/`GetLocalApicBaseAddress` are unchanged. AARCH64 does not
+    build the library.
+    - *Measured* (AlmaLinux 10 x86_64, Intel host, QEMU 10.0.0, KVM `-cpu
+      host`, the boot checks' command line, an idle Shell, 20 s after 10 s
+      to settle; HMP `info stats vcpu`, vCPU 0; vCPU 1 had no exits):
+      the r3 X64 RELEASE build without 0012, 1361, 1331 and 1338 exits a second;
+      with it, 912, 911, 909 and 912 (r2 RELEASE 1340, r3 930 on an earlier
+      build). halt_exits 100 and io_exits 300 a second in every run: the
+      100 Hz tick and the serial poll. About 420-450 fewer a second, 4.2-4.5
+      a tick: on this host TdIsEnabled() is 2 CPUIDs, so each of the two
+      MSR reads cost 4 exits. perf's kvm tracepoints (axl-sdk's method)
+      need privileges this host does not grant.
+
+32. **Patch 0013, an accepted TCP socket opens its IP child BY_CHILD**
+    (owner, 2026-11-25, for r3, with a reproducer; inventory item 7).
+    `TcpCloneTcb` shares the listener's IpInfo (`NET_GET_REF`) but never
+    opened that IP instance BY_CHILD_CONTROLLER for the clone's handle, as
+    `TcpAttachPcb` does for a socket's own. When the IP instance is
+    stopped, the core gives TcpDxe's Stop() only its BY_CHILD openers (the
+    listener); the clone's reference keeps the instance open BY_DRIVER,
+    and `CoreDisconnectControllersUsingProtocolInterface` calls Stop()
+    forever at TPL_CALLBACK. The patch opens it (closed by
+    `SockDestroyChild`, which already closed `Tcb->IpInfo->ChildHandle`
+    for every socket: a failing close for clones until now), and on that
+    open's failure destroys the clone as unconfigured (it is on no TCB
+    list). From the review: the `SockClone` failure path (a listener at
+    its backlog) leaked the reference taken before it, which brings the
+    same hang back after the listener goes; it now returns it.
+    - *Teardown*: Stop() destroys the listener first (its flush destroys
+      clones not yet accepted), then the accepted socket; its pending
+      tokens complete EFI_ABORTED via `SockConnFlush`, as every other
+      socket's do in Stop(). The peer is not told (no RST: `TcpDetachPcb`
+      sends nothing; unchanged).
+    - *Measured* (as §4.30; AARCH64 under TCG `-cpu max`, see §5 item 12)
+      with `tests/repro/repro.py tcp`: TcpHold.efi, a resident UEFI
+      driver, listens on 5555 (static 10.0.2.15), a host client connects
+      through `hostfwd` and sends 6 bytes, which TcpHold receives, leaving
+      a Receive pending; `dh -p <TCP4>` lists its two sockets (IPv4
+      0.0.0.0 and 10.0.2.2); then `reconnect -r`. r2 DEBUG, X64 and
+      AARCH64, and r3 without 0013 (X64 DEBUG): `reconnect -r` never
+      returned (60 s); 40 PC samples all in DxeCore (CoreOpenProtocol,
+      CoreDisconnectController, the handle database), no ASSERT; r2 X64
+      and AARCH64 RELEASE the same. Control, r2: the same boot with no
+      server returns in 0.6-1.1 s. r3, all four image sets: returns in
+      0.4-0.7 s, both sockets gone, a second TcpHold loaded after it
+      accepts and receives; no ASSERT in either DEBUG log.
+    - *No ASSERT in DEBUG, and no teardown-order problem seen*; the
+      AARCH64 `cortex-a57` ASSERT below is not TcpDxe's.
+    - *Left upstream* (found by the review, not fixed): when a clone's
+      `CreateCallback` fails, `SockCreate`'s error path
+      (SockImpl.c:769-778) frees a socket already linked into its
+      parent's ConnectionList, with ConnCnt counted. Unreached in the
+      boots above.
+
+33. **The reproducers are kept, not run per release** (builder,
+    2026-11-25; the owner decides, §5 item 11). `tests/repro/`: ReproPkg
+    (VfsRace, TcpHold), `build-apps.sh` (built with the last build's
+    BaseTools, X64 for baseline x86-64) and `repro.py` (on
+    `lib/axlfw/boot.py`'s QEMU command line). As with patch 0005, the
+    one-time boots above are the proof; a patch that no longer applies
+    fails the build.
 
 ## 5. Open decisions (the owner's)
 
@@ -884,6 +1000,23 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    pauses the Shell until the next key. *Recommendation:* accept it, as the
    keyboard's behaviour; skipping the pause while an editor runs would be a
    further ShellPkg change.
+11. **Boot checks for patches 0011 and 0013** (raised 2026-11-25, §4.33).
+    The release could run `tests/repro/repro.py vfs` and `tcp` on each
+    image set: about 25 s and 15 s a boot, plus building ReproPkg in the
+    build and virtiofsd on CI's runner. *Recommendation:* add the `tcp`
+    boot (no new host dependency; it guards the riskiest patch, which an
+    upstream TcpDxe change could undo while the patch still applies), and
+    leave `vfs` by hand until CI has virtiofsd.
+12. **`reconnect -r` on AARCH64 with only virtio-rng ASSERTs** (found
+    2026-11-25; not fixed, not in r3). On AARCH64 `cortex-a57` (no RNDR),
+    the network stack's only RNG is virtio-rng; `reconnect -r` stops it
+    with everything else, Ip4Dxe starts before it, and DxeNetLib asserts
+    (`ASSERT [Ip4Dxe] DxeNetLib.c(944)`, "Failed to locate
+    EFI_RNG_PROTOCOL"), with or without a TCP connection, on r2 and r3.
+    Under `-cpu max` (RNDR) it does not happen, nor on X64 under KVM
+    (RDRAND). *Recommendation:* a CONSUMERS note now; a fix (connect RNG
+    drivers first, or NetLib not asserting) only if a consumer needs
+    reconnect on AARCH64 without RNDR.
 
 ## 6. Assumptions
 

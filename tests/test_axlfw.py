@@ -231,7 +231,7 @@ class PatchCheckTests(unittest.TestCase):
 
     def test_required_list(self) -> None:
         self.assertEqual(
-            checks.REQUIRED_PATCHES[:10],
+            checks.REQUIRED_PATCHES,
             (
                 "0001-pointer-drivers.patch",
                 "0002-bochs-display-video.patch",
@@ -243,6 +243,9 @@ class PatchCheckTests(unittest.TestCase):
                 "0008-terminal-widechar.patch",
                 "0009-shell-delete-absent.patch",
                 "0010-virtio-mouse-wheel.patch",
+                "0011-virtiofs-tpl.patch",
+                "0012-localapic-eoi.patch",
+                "0013-tcp-clone-child.patch",
             ),
         )
 

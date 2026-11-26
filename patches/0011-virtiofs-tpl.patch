@@ -1,0 +1,496 @@
+Subject: [PATCH] OvmfPkg/VirtioFsDxe: serialize the file protocols at TPL_CALLBACK
+
+Every EFI_SIMPLE_FILE_SYSTEM_PROTOCOL and EFI_FILE_PROTOCOL member
+function sends its FUSE requests on the device's one request queue, and
+VirtioFsDxe raised no TPL around them. EFI_FILE_PROTOCOL may be called
+at TPL_CALLBACK, so a timer or event notification function that does
+file I/O on a virtio-fs volume can preempt a call at TPL_APPLICATION in
+the middle of a request: VirtioPrepare() starts every chain at
+descriptor 0, so the preempting request overwrites the preempted one's
+descriptors, or, if it lands after the preempted request was published,
+it carries the used index past the one VirtioFlush() waits for, and
+the preempted call polls forever.
+
+As EnhancedFatDxe does with FatFsLock, every member function a protocol
+instance carries now runs under one EFI_LOCK at TPL_CALLBACK, through a
+wrapper (SimpleFsLock.c), so a whole call, with all of its requests, is
+atomic with respect to every other. The functions behind the wrappers
+call one another (Open() calls OpenVolume()) as before, under the lock
+already held. DriverBinding Stop() checks under the lock that no file
+is open, uninstalls the protocol without it (as EnhancedFatDxe does:
+the uninstall may stop or start other drivers, which may call in), and
+checks again under the lock before it frees the device; a file opened
+in between, by a caller still holding the protocol, keeps the device,
+reinstalls the protocol and connects again the drivers the uninstall
+disconnected.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0005-pci-serial.patch to a copy of the packages it touches.
+
+---
+diff --git a/OvmfPkg/VirtioFsDxe/DriverBinding.c b/OvmfPkg/VirtioFsDxe/DriverBinding.c
+index 69d2bb7..98f6998 100644
+--- a/OvmfPkg/VirtioFsDxe/DriverBinding.c
++++ b/OvmfPkg/VirtioFsDxe/DriverBinding.c
+@@ -116,7 +116,7 @@ VirtioFsBindingStart (
+ 
+   InitializeListHead (&VirtioFs->OpenFiles);
+   VirtioFs->SimpleFs.Revision   = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_REVISION;
+-  VirtioFs->SimpleFs.OpenVolume = VirtioFsOpenVolume;
++  VirtioFs->SimpleFs.OpenVolume = VirtioFsLockedOpenVolume;
+ 
+   Status = gBS->InstallProtocolInterface (
+                   &ControllerHandle,
+@@ -164,6 +164,7 @@ VirtioFsBindingStop (
+   EFI_STATUS                       Status;
+   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *SimpleFs;
+   VIRTIO_FS                        *VirtioFs;
++  BOOLEAN                          Busy;
+ 
+   Status = gBS->OpenProtocol (
+                   ControllerHandle,
+@@ -179,7 +180,15 @@ VirtioFsBindingStop (
+ 
+   VirtioFs = VIRTIO_FS_FROM_SIMPLE_FS (SimpleFs);
+ 
+-  if (!IsListEmpty (&VirtioFs->OpenFiles)) {
++  //
++  // The member functions run under mVirtioFsLock (SimpleFsLock.c). As
++  // EnhancedFatDxe does, the protocol is uninstalled without the lock: the
++  // uninstall may stop or start other drivers, which may call in.
++  //
++  EfiAcquireLock (&mVirtioFsLock);
++  Busy = !IsListEmpty (&VirtioFs->OpenFiles);
++  EfiReleaseLock (&mVirtioFsLock);
++  if (Busy) {
+     return EFI_ACCESS_DENIED;
+   }
+ 
+@@ -192,6 +201,29 @@ VirtioFsBindingStop (
+     return Status;
+   }
+ 
++  //
++  // A caller at TPL_CALLBACK holding the protocol could have opened a file
++  // before the uninstall: then the device stays, and the drivers the
++  // uninstall disconnected are connected again, as the DXE core does when
++  // an uninstall fails.
++  //
++  EfiAcquireLock (&mVirtioFsLock);
++  if (!IsListEmpty (&VirtioFs->OpenFiles)) {
++    EfiReleaseLock (&mVirtioFsLock);
++    Status = gBS->InstallProtocolInterface (
++                    &ControllerHandle,
++                    &gEfiSimpleFileSystemProtocolGuid,
++                    EFI_NATIVE_INTERFACE,
++                    SimpleFs
++                    );
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++
++    gBS->ConnectController (ControllerHandle, NULL, NULL, TRUE);
++    return EFI_ACCESS_DENIED;
++  }
++
+   Status = gBS->CloseEvent (VirtioFs->ExitBoot);
+   ASSERT_EFI_ERROR (Status);
+ 
+@@ -206,6 +238,7 @@ VirtioFsBindingStop (
+   ASSERT_EFI_ERROR (Status);
+ 
+   FreePool (VirtioFs);
++  EfiReleaseLock (&mVirtioFsLock);
+ 
+   return EFI_SUCCESS;
+ }
+diff --git a/OvmfPkg/VirtioFsDxe/SimpleFsLock.c b/OvmfPkg/VirtioFsDxe/SimpleFsLock.c
+new file mode 100644
+index 0000000..035558d
+--- /dev/null
++++ b/OvmfPkg/VirtioFsDxe/SimpleFsLock.c
+@@ -0,0 +1,234 @@
++/** @file
++  Serialization of the EFI_SIMPLE_FILE_SYSTEM_PROTOCOL and EFI_FILE_PROTOCOL
++  member functions of the Virtio Filesystem driver.
++
++  A member function sends one or more FUSE requests on the device's single
++  request queue, and the ring, the descriptor indices that VirtioPrepare()
++  resets and the request ID counter are shared by every caller. A caller at
++  TPL_CALLBACK (a timer or another event's notification function) preempting
++  a request at a lower TPL would run its own requests on the ring under the
++  preempted one: VirtioFlush() of the preempted request then waits for a used
++  index the ring has already passed, or finds its descriptors overwritten.
++
++  As EnhancedFatDxe does with FatFsLock, every member function installed in a
++  protocol instance runs under one lock at TPL_CALLBACK, so a whole call, with
++  all of its requests, is atomic with respect to every other. The functions
++  behind these wrappers call one another (Open() calls OpenVolume()) without
++  the lock, which is held already. DriverBinding Stop() takes it around its
++  checks that no file is open.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include "VirtioFsDxe.h"
++
++//
++// The lock serializing every member function, for all Virtio Filesystem
++// devices (as FatFsLock does for all FAT volumes).
++//
++EFI_LOCK  mVirtioFsLock = EFI_INITIALIZE_LOCK_VARIABLE (TPL_CALLBACK);
++
++EFI_STATUS
++EFIAPI
++VirtioFsLockedOpenVolume (
++  IN  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *This,
++  OUT EFI_FILE_PROTOCOL                **Root
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsOpenVolume (This, Root);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileClose (
++  IN EFI_FILE_PROTOCOL  *This
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileClose (This);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileDelete (
++  IN EFI_FILE_PROTOCOL  *This
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileDelete (This);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileFlush (
++  IN EFI_FILE_PROTOCOL  *This
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileFlush (This);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileGetInfo (
++  IN     EFI_FILE_PROTOCOL  *This,
++  IN     EFI_GUID           *InformationType,
++  IN OUT UINTN              *BufferSize,
++  OUT VOID                  *Buffer
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileGetInfo (This, InformationType, BufferSize, Buffer);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileGetPosition (
++  IN     EFI_FILE_PROTOCOL  *This,
++  OUT UINT64                *Position
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileGetPosition (This, Position);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileOpen (
++  IN     EFI_FILE_PROTOCOL  *This,
++  OUT EFI_FILE_PROTOCOL     **NewHandle,
++  IN     CHAR16             *FileName,
++  IN     UINT64             OpenMode,
++  IN     UINT64             Attributes
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileOpen (This, NewHandle, FileName, OpenMode, Attributes);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileRead (
++  IN     EFI_FILE_PROTOCOL  *This,
++  IN OUT UINTN              *BufferSize,
++  OUT VOID                  *Buffer
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileRead (This, BufferSize, Buffer);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileSetInfo (
++  IN EFI_FILE_PROTOCOL  *This,
++  IN EFI_GUID           *InformationType,
++  IN UINTN              BufferSize,
++  IN VOID               *Buffer
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileSetInfo (This, InformationType, BufferSize, Buffer);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileSetPosition (
++  IN EFI_FILE_PROTOCOL  *This,
++  IN UINT64             Position
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileSetPosition (This, Position);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++VirtioFsLockedFileWrite (
++  IN     EFI_FILE_PROTOCOL  *This,
++  IN OUT UINTN              *BufferSize,
++  IN     VOID               *Buffer
++  )
++{
++  EFI_STATUS  Status;
++
++  EfiAcquireLock (&mVirtioFsLock);
++  Status = VirtioFsSimpleFileWrite (This, BufferSize, Buffer);
++  EfiReleaseLock (&mVirtioFsLock);
++  return Status;
++}
++
++/**
++  Populate the EFI_FILE_PROTOCOL member functions of a new file, each one
++  serialized under mVirtioFsLock.
++
++  @param[out] SimpleFile  The protocol instance to populate.
++**/
++VOID
++VirtioFsInitLockedSimpleFile (
++  OUT EFI_FILE_PROTOCOL  *SimpleFile
++  )
++{
++  SimpleFile->Revision    = EFI_FILE_PROTOCOL_REVISION;
++  SimpleFile->Open        = VirtioFsLockedFileOpen;
++  SimpleFile->Close       = VirtioFsLockedFileClose;
++  SimpleFile->Delete      = VirtioFsLockedFileDelete;
++  SimpleFile->Read        = VirtioFsLockedFileRead;
++  SimpleFile->Write       = VirtioFsLockedFileWrite;
++  SimpleFile->GetPosition = VirtioFsLockedFileGetPosition;
++  SimpleFile->SetPosition = VirtioFsLockedFileSetPosition;
++  SimpleFile->GetInfo     = VirtioFsLockedFileGetInfo;
++  SimpleFile->SetInfo     = VirtioFsLockedFileSetInfo;
++  SimpleFile->Flush       = VirtioFsLockedFileFlush;
++}
+diff --git a/OvmfPkg/VirtioFsDxe/SimpleFsOpen.c b/OvmfPkg/VirtioFsDxe/SimpleFsOpen.c
+index 2ecf3d6..c771d6a 100644
+--- a/OvmfPkg/VirtioFsDxe/SimpleFsOpen.c
++++ b/OvmfPkg/VirtioFsDxe/SimpleFsOpen.c
+@@ -534,29 +534,19 @@ VirtioFsSimpleFileOpen (
+   //
+   // Populate the new VIRTIO_FS_FILE object.
+   //
+-  NewVirtioFsFile->Signature              = VIRTIO_FS_FILE_SIG;
+-  NewVirtioFsFile->SimpleFile.Revision    = EFI_FILE_PROTOCOL_REVISION;
+-  NewVirtioFsFile->SimpleFile.Open        = VirtioFsSimpleFileOpen;
+-  NewVirtioFsFile->SimpleFile.Close       = VirtioFsSimpleFileClose;
+-  NewVirtioFsFile->SimpleFile.Delete      = VirtioFsSimpleFileDelete;
+-  NewVirtioFsFile->SimpleFile.Read        = VirtioFsSimpleFileRead;
+-  NewVirtioFsFile->SimpleFile.Write       = VirtioFsSimpleFileWrite;
+-  NewVirtioFsFile->SimpleFile.GetPosition = VirtioFsSimpleFileGetPosition;
+-  NewVirtioFsFile->SimpleFile.SetPosition = VirtioFsSimpleFileSetPosition;
+-  NewVirtioFsFile->SimpleFile.GetInfo     = VirtioFsSimpleFileGetInfo;
+-  NewVirtioFsFile->SimpleFile.SetInfo     = VirtioFsSimpleFileSetInfo;
+-  NewVirtioFsFile->SimpleFile.Flush       = VirtioFsSimpleFileFlush;
+-  NewVirtioFsFile->IsDirectory            = NewNodeIsDirectory;
+-  NewVirtioFsFile->IsOpenForWriting       = OpenForWriting;
+-  NewVirtioFsFile->OwnerFs                = VirtioFs;
+-  NewVirtioFsFile->CanonicalPathname      = NewCanonicalPath;
+-  NewVirtioFsFile->FilePosition           = 0;
+-  NewVirtioFsFile->NodeId                 = NewNodeId;
+-  NewVirtioFsFile->FuseHandle             = NewFuseHandle;
+-  NewVirtioFsFile->FileInfoArray          = NULL;
+-  NewVirtioFsFile->SingleFileInfoSize     = 0;
+-  NewVirtioFsFile->NumFileInfo            = 0;
+-  NewVirtioFsFile->NextFileInfo           = 0;
++  VirtioFsInitLockedSimpleFile (&NewVirtioFsFile->SimpleFile);
++  NewVirtioFsFile->Signature          = VIRTIO_FS_FILE_SIG;
++  NewVirtioFsFile->IsDirectory        = NewNodeIsDirectory;
++  NewVirtioFsFile->IsOpenForWriting   = OpenForWriting;
++  NewVirtioFsFile->OwnerFs            = VirtioFs;
++  NewVirtioFsFile->CanonicalPathname  = NewCanonicalPath;
++  NewVirtioFsFile->FilePosition       = 0;
++  NewVirtioFsFile->NodeId             = NewNodeId;
++  NewVirtioFsFile->FuseHandle         = NewFuseHandle;
++  NewVirtioFsFile->FileInfoArray      = NULL;
++  NewVirtioFsFile->SingleFileInfoSize = 0;
++  NewVirtioFsFile->NumFileInfo        = 0;
++  NewVirtioFsFile->NextFileInfo       = 0;
+ 
+   //
+   // One more file is now open for the filesystem.
+diff --git a/OvmfPkg/VirtioFsDxe/SimpleFsOpenVolume.c b/OvmfPkg/VirtioFsDxe/SimpleFsOpenVolume.c
+index d08b8e0..4c89de2 100644
+--- a/OvmfPkg/VirtioFsDxe/SimpleFsOpenVolume.c
++++ b/OvmfPkg/VirtioFsDxe/SimpleFsOpenVolume.c
+@@ -59,29 +59,19 @@ VirtioFsOpenVolume (
+   //
+   // Populate the new VIRTIO_FS_FILE object.
+   //
+-  VirtioFsFile->Signature              = VIRTIO_FS_FILE_SIG;
+-  VirtioFsFile->SimpleFile.Revision    = EFI_FILE_PROTOCOL_REVISION;
+-  VirtioFsFile->SimpleFile.Open        = VirtioFsSimpleFileOpen;
+-  VirtioFsFile->SimpleFile.Close       = VirtioFsSimpleFileClose;
+-  VirtioFsFile->SimpleFile.Delete      = VirtioFsSimpleFileDelete;
+-  VirtioFsFile->SimpleFile.Read        = VirtioFsSimpleFileRead;
+-  VirtioFsFile->SimpleFile.Write       = VirtioFsSimpleFileWrite;
+-  VirtioFsFile->SimpleFile.GetPosition = VirtioFsSimpleFileGetPosition;
+-  VirtioFsFile->SimpleFile.SetPosition = VirtioFsSimpleFileSetPosition;
+-  VirtioFsFile->SimpleFile.GetInfo     = VirtioFsSimpleFileGetInfo;
+-  VirtioFsFile->SimpleFile.SetInfo     = VirtioFsSimpleFileSetInfo;
+-  VirtioFsFile->SimpleFile.Flush       = VirtioFsSimpleFileFlush;
+-  VirtioFsFile->IsDirectory            = TRUE;
+-  VirtioFsFile->IsOpenForWriting       = FALSE;
+-  VirtioFsFile->OwnerFs                = VirtioFs;
+-  VirtioFsFile->CanonicalPathname      = CanonicalPathname;
+-  VirtioFsFile->FilePosition           = 0;
+-  VirtioFsFile->NodeId                 = VIRTIO_FS_FUSE_ROOT_DIR_NODE_ID;
+-  VirtioFsFile->FuseHandle             = RootDirHandle;
+-  VirtioFsFile->FileInfoArray          = NULL;
+-  VirtioFsFile->SingleFileInfoSize     = 0;
+-  VirtioFsFile->NumFileInfo            = 0;
+-  VirtioFsFile->NextFileInfo           = 0;
++  VirtioFsInitLockedSimpleFile (&VirtioFsFile->SimpleFile);
++  VirtioFsFile->Signature          = VIRTIO_FS_FILE_SIG;
++  VirtioFsFile->IsDirectory        = TRUE;
++  VirtioFsFile->IsOpenForWriting   = FALSE;
++  VirtioFsFile->OwnerFs            = VirtioFs;
++  VirtioFsFile->CanonicalPathname  = CanonicalPathname;
++  VirtioFsFile->FilePosition       = 0;
++  VirtioFsFile->NodeId             = VIRTIO_FS_FUSE_ROOT_DIR_NODE_ID;
++  VirtioFsFile->FuseHandle         = RootDirHandle;
++  VirtioFsFile->FileInfoArray      = NULL;
++  VirtioFsFile->SingleFileInfoSize = 0;
++  VirtioFsFile->NumFileInfo        = 0;
++  VirtioFsFile->NextFileInfo       = 0;
+ 
+   //
+   // One more file open for the filesystem.
+diff --git a/OvmfPkg/VirtioFsDxe/VirtioFsDxe.h b/OvmfPkg/VirtioFsDxe/VirtioFsDxe.h
+index 4af962d..68dc6fc 100644
+--- a/OvmfPkg/VirtioFsDxe/VirtioFsDxe.h
++++ b/OvmfPkg/VirtioFsDxe/VirtioFsDxe.h
+@@ -13,6 +13,7 @@
+ #include <Guid/FileInfo.h>             // EFI_FILE_INFO
+ #include <IndustryStandard/VirtioFs.h> // VIRTIO_FS_TAG_BYTES
+ #include <Library/DebugLib.h>          // CR()
++#include <Library/UefiLib.h>           // EFI_LOCK
+ #include <Protocol/SimpleFileSystem.h> // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
+ #include <Protocol/VirtioDevice.h>     // VIRTIO_DEVICE_PROTOCOL
+ #include <Uefi/UefiBaseType.h>         // EFI_EVENT
+@@ -539,3 +540,23 @@ VirtioFsSimpleFileWrite (
+   IN OUT UINTN              *BufferSize,
+   IN     VOID               *Buffer
+   );
++
++//
++// Serialization of the member functions above (SimpleFsLock.c). The
++// protocol instances carry these wrappers, each of which runs its member
++// function under mVirtioFsLock, at TPL_CALLBACK.
++//
++
++extern EFI_LOCK  mVirtioFsLock;
++
++EFI_STATUS
++EFIAPI
++VirtioFsLockedOpenVolume (
++  IN  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *This,
++  OUT EFI_FILE_PROTOCOL                **Root
++  );
++
++VOID
++VirtioFsInitLockedSimpleFile (
++  OUT EFI_FILE_PROTOCOL  *SimpleFile
++  );
+diff --git a/OvmfPkg/VirtioFsDxe/VirtioFsDxe.inf b/OvmfPkg/VirtioFsDxe/VirtioFsDxe.inf
+index 8d962bc..c27d332 100644
+--- a/OvmfPkg/VirtioFsDxe/VirtioFsDxe.inf
++++ b/OvmfPkg/VirtioFsDxe/VirtioFsDxe.inf
+@@ -106,6 +106,7 @@
+   SimpleFsFlush.c
+   SimpleFsGetInfo.c
+   SimpleFsGetPosition.c
++  SimpleFsLock.c
+   SimpleFsOpen.c
+   SimpleFsOpenVolume.c
+   SimpleFsRead.c
+@@ -120,6 +121,7 @@
+   DebugLib
+   MemoryAllocationLib
+   TimeBaseLib
++  UefiLib
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
+   VirtioLib
