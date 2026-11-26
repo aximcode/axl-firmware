@@ -1,7 +1,7 @@
 """The release's boot checks: one image set booted in QEMU, its Shell driven
 over the serial console.
 
-Per arch and flavour, five boots (and on AARCH64 one per CPU model), each
+Per arch and flavour, six boots (and on AARCH64 one per CPU model), each
 from a FAT disk whose removable path holds the release's own Shell:
 
 - serial only: the Shell's `mode` list; a variable written (`setvar -nv`),
@@ -16,7 +16,12 @@ from a FAT disk whose removable path holds the release's own Shell:
   the firmware's default resolution);
 - serial only, again: a script that ticks for a minute, broken by a
   serial Ctrl-C (0x03), which must bring the prompt back within
-  CTRL_C_BOUND (patch 0004).
+  CTRL_C_BOUND (patch 0004);
+- serial only, again: a serial DEL (0x7f) typed at the prompt must erase
+  the character before it (VT-UTF8 on both arches); then the ticks script
+  paused by a serial Ctrl-S (0x13), which must stop its ticks for
+  CTRL_S_QUIET seconds, resumed by a key, then broken by a Ctrl-C (patch
+  0007).
 
 X64 runs under KVM when /dev/kvm is usable, else TCG; AARCH64 under TCG.
 """
@@ -221,6 +226,12 @@ class Guest:
         """Where the next expect starts looking in the console."""
         with self._cond:
             return self._mark
+
+    @property
+    def end(self) -> int:
+        """The end of the console so far: a position for output()."""
+        with self._cond:
+            return len(self._text)
 
     def output(self, start: int, end: int) -> str:
         """The console between two positions (a mark, a match's start)."""
@@ -458,6 +469,82 @@ def ctrl_c_break(g: Guest, bound: float = CTRL_C_BOUND) -> float:
     return took
 
 
+# --- r3 console: the Ctrl-S boot check (patch 0007) -------------------------
+# A serial Ctrl-S (0x13) must pause a running script's output, and the next
+# key resume it (patch 0007; DESIGN §4.28). The ticks already on their way
+# when 0x13 is sent are allowed CTRL_S_SETTLE seconds; then CTRL_S_QUIET
+# seconds must pass with no tick (r2, without the patch: 49-50 ticks in 5 s,
+# so about 30 in 3 s); then a key must bring the next tick within
+# CTRL_S_BOUND, as CTRL_C_BOUND bounds a break.
+CTRL_S_SETTLE = 1.0
+CTRL_S_QUIET = 3.0
+CTRL_S_BOUND = 10.0
+CTRL_S_RESUME_KEY = " "
+_TICK = re.compile(r"\btick (\d+)\b")
+
+
+def ctrl_s_pause(
+    g: Guest, settle: float = CTRL_S_SETTLE, quiet: float = CTRL_S_QUIET, bound: float = CTRL_S_BOUND
+) -> dict[str, int]:
+    """Start the ticks script, pause it with a serial Ctrl-S, resume it with
+    a key, then break it with a Ctrl-C (as ctrl_c_break checks).
+
+    Returns the last tick before the pause and the first after the key.
+    BootError if a tick came in the quiet seconds, the script ended before
+    the pause, the next tick did not come within bound of the key, or the
+    Ctrl-C did not bring the prompt back.
+    """
+    g.send(f"fs0:\\{TICKS_SCRIPT}\r")
+    script = g.mark
+    g.expect(re.compile(r"\btick 3\b"), "the ticks script running")
+    g.send("\x13")
+    time.sleep(settle)
+    held = g.end
+    time.sleep(quiet)
+    before = g.output(script, held)
+    during = g.output(held, g.end)
+    if "ticks done" in before:
+        msg = f"{g.name}: the script ended before a serial Ctrl-S (0x13) could pause it"
+        raise BootError(msg)
+    ticks = [int(n) for n in _TICK.findall(during)]
+    if ticks or "ticks done" in during:
+        what = f"{len(ticks)} ticks (tick {ticks[0]} to tick {ticks[-1]})" if ticks else "its end"
+        msg = (
+            f"{g.name}: a serial Ctrl-S (0x13) did not pause the script's output:"
+            f" {what} in the {quiet:g} s from {settle:g} s after it"
+        )
+        raise BootError(msg)
+    # The last tick of all: a tick's line cut by a read at `held` is whole now.
+    paused_after = int(_TICK.findall(g.output(script, g.end))[-1])
+    g.send(CTRL_S_RESUME_KEY)
+    g.expect(
+        re.compile(rf"\btick {paused_after + 1}\b"),
+        f"tick {paused_after + 1} after a key, to resume output paused by a serial Ctrl-S (0x13),",
+        bound,
+    )
+    g.send("\x03")
+    g.expect(_PROMPT, "Shell prompt after a serial Ctrl-C (0x03) to a resumed script", CTRL_C_BOUND)
+    if "ctrl-s-ok" not in g.command("echo ctrl-s-ok"):
+        msg = f"{g.name}: after a serial Ctrl-S, a key and a Ctrl-C the Shell did not run `echo`"
+        raise BootError(msg)
+    return {"paused_after": paused_after, "resumed_with": paused_after + 1}
+
+
+def del_backspace(g: Guest) -> None:
+    """At the prompt, type `echo abX`, DEL (0x7f), `c`: the Shell must print
+    abc. A VT-UTF8 (or TTY) terminal reads DEL as Backspace; VT100 as Delete,
+    which at the end of the line erases nothing (DESIGN §4.29). BootError if
+    it printed anything else.
+    """
+    got = g.command("echo abX\x7fc").strip()
+    if got != "abc":
+        msg = f"{g.name}: a serial DEL (0x7f) is not Backspace: `echo abX`, DEL, `c` printed {got!r}, not 'abc'"
+        raise BootError(msg)
+
+
+# --- end of r3 console: the Ctrl-S boot check --------------------------------
+
+
 def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Result:
     """Every boot check of s; the transcripts are kept in workdir."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -591,6 +678,18 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
             ctrl_c_break(g)
 
         attempt("ctrl-c", [], ctrl_c)
+
+        # --- r3 console: DEL is Backspace (VT-UTF8); Ctrl-S pauses, a key resumes (patch 0007) ---
+        def ctrl_s(g: Guest) -> None:
+            g.prompt()
+            try:
+                del_backspace(g)
+            except BootError as err:
+                result.problems.append(f"{s.arch} {s.flavour}: {err}")
+            ctrl_s_pause(g)
+
+        attempt("ctrl-s", [], ctrl_s)
+        # --- end of r3 console ---
 
         if s.arch == "aarch64":
             cpus: dict[str, bool] = {}

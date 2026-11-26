@@ -428,6 +428,15 @@ def assemble(a: AssembleArgs) -> int:
         facts, more = checks.build_facts(img.build(a.ws, a.toolchain), img.arch, img.flavour)
         debug[img.dir] = facts
         problems += more
+    # --- r3 console: each patch applied, and compiled from the patched copy ---
+    problems += checks.check_patches(
+        a.patches,
+        checks.REQUIRED_PATCHES,
+        a.ws,
+        a.src,
+        [img.build(a.ws, a.toolchain) / lic_mod.EDK2_ARCH[img.arch] for img in IMAGES],
+    )
+    # --- end of r3 console ---
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         return 1
@@ -632,6 +641,14 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
     if sorted(images) != sorted(img.dir for img in IMAGES):
         problems.append(f"manifest images {sorted(images)}, not {sorted(img.dir for img in IMAGES)}")
     problems += check_hardware_images(manifest.get("hardware_images"), images)
+    # --- r3 console: every required patch listed as applied ---
+    edk2 = install.json_object(manifest.get("edk2")) or {}
+    listed = edk2.get("patches")
+    entries = [install.json_object(x) for x in cast("list[object]", listed)] if isinstance(listed, list) else []
+    names = [x.get("name") for x in entries if x is not None]
+    missing = checks.missing_patches([n for n in names if isinstance(n, str)], checks.REQUIRED_PATCHES)
+    problems += [f"manifest edk2.patches: {x}" for x in missing]
+    # --- end of r3 console ---
     for img in IMAGES:
         if img.dir not in images:
             continue  # said above

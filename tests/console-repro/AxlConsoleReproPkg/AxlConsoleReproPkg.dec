@@ -1,0 +1,11 @@
+## @file
+#  The r3 console reproducers' guest application (tests/console-repro).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = AxlConsoleReproPkg
+  PACKAGE_GUID      = 4C7A9E52-1B3D-4F86-9A0E-2D5C8B7F3E61
+  PACKAGE_VERSION   = 1.0

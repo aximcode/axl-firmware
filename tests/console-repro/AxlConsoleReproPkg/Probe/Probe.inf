@@ -1,0 +1,38 @@
+## @file
+#  Probe.efi: what the r3 console reproducers read from inside the guest.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = Probe
+  FILE_GUID      = 2B9F4E61-7C3A-4D85-A1E0-6F8D2C5B3A97
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = ProbeMain
+
+[Sources]
+  Probe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
+  UefiBootServicesTableLib
+  MemoryAllocationLib
+  DevicePathLib
+  BaseLib
+  BaseMemoryLib
+
+[Protocols]
+  gEfiSimplePointerProtocolGuid
+  gEfiShellProtocolGuid
+  gEfiShellParametersProtocolGuid
+  gEfiSerialIoProtocolGuid
+  gEfiSimpleTextOutProtocolGuid
+
+[Guids]
+  gEfiVT100Guid
