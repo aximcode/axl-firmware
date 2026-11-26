@@ -2,8 +2,10 @@
 # The checks of build.sh that need no build and no QEMU:
 #   - the unit tests of lib/axlfw (tests/test_axlfw.py): the FV walker on
 #     stand-in images, the Shell's PE checks, the AutoGen facts, the
-#     descriptors exactly, the Shell output parsers, and the install from
-#     local tarballs (digests, a corrupt set, an escaping member, upgrades);
+#     descriptors exactly, the Shell output parsers, the X64 instruction-set
+#     scan (on stand-ins, and on the host gcc's output at each x86-64 level),
+#     and the install from local tarballs (digests, a corrupt set, an
+#     escaping member, upgrades);
 #   - build.sh's own arguments and `verify` errors, exactly; two runs making
 #     the venv at once (one makes it); a failed build leaving no earlier
 #     release in dist/;

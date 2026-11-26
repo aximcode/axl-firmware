@@ -67,6 +67,20 @@ jobs:
             sudo udevadm trigger --name-match=kvm
           fi
           ls -l /dev/kvm || echo "no /dev/kvm: X64 boots under TCG"
+      # Ubuntu's QEMU 10.2.1 can lose a wakeup in its io_uring main loop
+      # (fixed upstream by 961fcc0f22 and 2ae361ef1d, in QEMU 10.2.2): a
+      # guest's virtio-gpu request then waits for any other fd event, and a
+      # boot hangs (docs/DESIGN.md §4.25). With io_uring disabled QEMU's
+      # main loop uses epoll, as on the hosts the boots were measured on.
+      # Never a retry: a retry would hide a real hang in a release.
+      - name: QEMU's main loop on epoll, not io_uring
+        run: |
+          sudo sysctl -w kernel.io_uring_disabled=2
+          sysctl kernel.io_uring_disabled
+          [ "$(sysctl -n kernel.io_uring_disabled)" = 2 ]
+          dpkg-query -W qemu-system-x86 qemu-system-arm
+          qemu-system-x86_64 --version
+          qemu-system-aarch64 --version
       - name: The edk2 source, cached by its pinned commit
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:

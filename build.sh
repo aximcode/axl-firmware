@@ -230,6 +230,38 @@ default_jobs() {
     fi
 }
 
+# pin_x64_march <tools_def> <march> <target...>: <march> appended to each
+# flavour's X64 CC_FLAGS in the workspace's own tools_def.txt (BuildEnv's
+# copy of the template), so that X64 code is built for baseline x86-64
+# (DESIGN §4.24). edk2's GCC X64 flags name no -march, so gcc's own default
+# decides, and Ubuntu's amd64v3 gcc (GitHub's runners) and AlmaLinux 10's
+# both default to x86-64-v3. Every X64 C compile of every module and library starts from
+# these flags; the DSC and INF flags edk2 appends to them name no -march.
+# With LTO the code is generated at the link from the options each object
+# was compiled with, so the link needs none. Each target must have exactly
+# one such line. release.py's ISA check reads the makefiles and the code.
+pin_x64_march() {
+    local def=$1 march=$2 target n cr=$'\r' re
+    shift 2
+    # march as an ERE, for the check below.
+    re=$(printf '%s' "$march" | sed 's/[][\\.*^$+?(){}|]/\\&/g')
+    # The template's lines end in CRLF, and edk2's parser (Python's
+    # universal newlines) ends a line at a lone CR too: the flag goes
+    # before the CR, or it is a line of its own, which the parser drops.
+    awk -v march="$march" '
+        /^[[:blank:]]*(DEBUG|RELEASE|NOOPT)_GCC_X64_CC_FLAGS[[:blank:]]*=/ {
+            cr = sub(/\r$/, "")
+            end = cr ? "\r" : ""
+            $0 = $0 " " march end
+        }
+        { print }' "$def" >"$def.new" || die "cannot rewrite $def"
+    mv "$def.new" "$def"
+    for target; do
+        n=$(grep -cE "^[[:blank:]]*${target}_GCC_X64_CC_FLAGS[[:blank:]]*=[^$cr]* $re$cr?\$" "$def") || n=0
+        [[ $n == 1 ]] || die "$def: $n ${target}_GCC_X64_CC_FLAGS lines to pin $march on, not 1"
+    done
+}
+
 # Sourced (by the tests): the functions above, and nothing run.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
@@ -317,7 +349,7 @@ if [[ $fetch_only == 0 ]]; then
     # An earlier build's release goes first: a build that fails leaves none
     # that would look like its own.
     rm -f "$here"/dist/axl-firmware-* "$here/dist/SHA256SUMS"
-    for tool in python3 make gcc nasm iasl truncate sha256sum xz "$aa64_gcc"; do
+    for tool in python3 make gcc objdump nasm iasl truncate sha256sum xz "$aa64_gcc"; do
         command -v "$tool" >/dev/null || die "$tool not found on PATH"
     done
     for q in qemu-system-x86_64 qemu-system-aarch64; do
@@ -430,6 +462,8 @@ common_pcds=(
 # GCC5"); GCC is its successor.
 toolchain=GCC
 flavours=(DEBUG RELEASE)
+# The X64 code's instruction set: baseline x86-64 (DESIGN §4.24).
+x64_march=-march=x86-64
 # The firmware's version (SMBIOS type 0's BIOS version) is the tag, and its
 # date the commit's, as QEMU's roms/Makefile passes them.
 release_date=$(git -C "$src" log -1 --pretty=format:%cd --date=format:%m/%d/%Y "$commit") ||
@@ -499,6 +533,8 @@ done
     [[ "$(command -v build)" == "$ws/BaseTools/BinWrappers/PosixLike/build" ]] ||
         die "BuildEnv did not put the workspace's BaseTools build first on PATH" \
             "(found: $(command -v build || echo none))"
+    pin_x64_march "$CONF_PATH/tools_def.txt" "$x64_march" "${flavours[@]}"
+    echo "+ X64 C compiled for baseline x86-64: $x64_march on the X64 CC_FLAGS of $CONF_PATH/tools_def.txt"
     # edk2_build <target> <dsc> <arch> <opts...> -- <pcds...>
     edk2_build() {
         local target=$1 dsc=$2 arch=$3 a

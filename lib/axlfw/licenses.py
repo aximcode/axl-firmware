@@ -367,22 +367,66 @@ def _compiled_source(deps: Path) -> str | None:
     return first[0] if first else None
 
 
+def module_build_dirs(
+    report: Report, fd: str, arch_build: Path, roots: list[Path]
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    """Each (name, build directory) of the modules in an FD's volumes.
+
+    A module's build directory is arch_build/<INF dir>/<INF name>, or a
+    FILE_GUID's, whose GNUmakefile names the same MODULE_FILE; a module
+    built twice has both. Returns them and the problems: a module under
+    no package root, or with no build directory.
+    """
+    out: list[tuple[str, Path]] = []
+    problems: list[str] = []
+    for name, inf in _module_entries(report, fd):
+        rel = _relative(inf, roots)
+        if rel is None:
+            problems.append(f"{name} ({inf}) is under no package root")
+            continue
+        base = arch_build / Path(rel).parent
+        dirs = [
+            d.parent
+            for d in sorted(base.glob("*/GNUmakefile"))
+            if re.search(rf"^MODULE_FILE = {re.escape(Path(rel).name)}$", d.read_text(errors="replace"), re.M)
+        ]
+        if not dirs:
+            problems.append(f"{name}: no build directory for {rel} in {arch_build}")
+        out += [(name, d) for d in dirs]
+    return out, problems
+
+
+def library_outputs(name: str, mod: Path) -> tuple[list[Path], list[str]]:
+    """The OUTPUT directories of the libraries a module's build linked.
+
+    From its OUTPUT/static_library_files.lst. A module of objects links
+    libraries; only one built otherwise (OVMF's ResetVector, NASM to a
+    binary) has no list, and none is needed.
+    """
+    lst = mod / "OUTPUT" / "static_library_files.lst"
+    if lst.is_file():
+        return [Path(x.strip()).parent for x in lst.read_text().splitlines() if x.strip()], []
+    if any((mod / "OUTPUT").rglob("*.obj")):
+        return [], [f"{name}: {lst} missing, so its libraries are unknown"]
+    return [], []
+
+
 def compiled_parts(
     report: Report, fd: str, arch_build: Path, roots: list[Path], submodules: list[str]
 ) -> tuple[set[str], list[str]]:
     """The parts whose sources were compiled into objects an FD's modules link.
 
     A cross-check of image_parts by another route, the build's own output:
-    each module's build directory (arch_build/<INF dir>/<INF name>, or a
-    FILE_GUID's, whose GNUmakefile names the same MODULE_FILE), its
+    each module's build directory (module_build_dirs), its
     OUTPUT/static_library_files.lst (the libraries linked), and in its own
     and each library's OUTPUT, every object's .deps (gcc -MMD), whose first
     prerequisite is the source compiled. Neither the report's library
-    lists nor the INFs' [Sources] are read.
+    lists nor the INFs' [Sources] are read. The problems list
+    module_build_dirs' first, then each module's in report order.
     """
     found: set[str] = set()
-    problems: list[str] = []
     seen_out: dict[Path, set[str]] = {}
+    dirs, problems = module_build_dirs(report, fd, arch_build, roots)
 
     def of_output(out: Path) -> set[str]:
         if out not in seen_out:
@@ -400,31 +444,11 @@ def compiled_parts(
             seen_out[out] = parts
         return seen_out[out]
 
-    for name, inf in _module_entries(report, fd):
-        rel = _relative(inf, roots)
-        if rel is None:
-            problems.append(f"{name} ({inf}) is under no package root")
-            continue
-        base = arch_build / Path(rel).parent
-        dirs = [
-            d
-            for d in sorted(base.glob("*/GNUmakefile"))
-            if re.search(rf"^MODULE_FILE = {re.escape(Path(rel).name)}$", d.read_text(errors="replace"), re.M)
-        ]
-        if not dirs:
-            problems.append(f"{name}: no build directory for {rel} in {arch_build}")
-            continue
-        for mk in dirs:
-            lst = mk.parent / "OUTPUT" / "static_library_files.lst"
-            outs = [mk.parent / "OUTPUT"]
-            if lst.is_file():
-                outs += [Path(x.strip()).parent for x in lst.read_text().splitlines() if x.strip()]
-            elif any((mk.parent / "OUTPUT").rglob("*.obj")):
-                # A module of objects links libraries; only one built
-                # otherwise (OVMF's ResetVector, NASM to a binary) has none.
-                problems.append(f"{name}: {lst} missing, so its libraries are unknown")
-            for out in outs:
-                found |= of_output(out)
+    for name, mod in dirs:
+        libs, more = library_outputs(name, mod)
+        problems += more
+        for out in [mod / "OUTPUT", *libs]:
+            found |= of_output(out)
     return found, problems
 
 

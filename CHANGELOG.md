@@ -4,8 +4,36 @@ Each release is `<edk2 tag>-r<N>`; its section here is its release notes.
 
 ## edk2-stable202611-r2
 
-A fix for a regression in r1: a serial Ctrl-C reached the UEFI Shell no
-more. Everything else is as in r1.
+Two fixes for r1: a serial Ctrl-C reached the UEFI Shell no more, and
+r1's X64 images need an x86-64-v3 CPU. Everything else is as in r1.
+
+- **r1's X64 images need an x86-64-v3 CPU** (Haswell or later, or a TCG
+  CPU model with BMI1, BMI2, MOVBE and LZCNT, such as `-cpu max`). They
+  were built on GitHub's Ubuntu 26.04 runner, whose gcc defaults to
+  x86-64-v3, and edk2's X64 flags name no `-march`: SEC, PEI, DXE and the
+  Shell hold about two thousand BMI1, BMI2, MOVBE and LZCNT instructions,
+  and on an older CPU, or under TCG with `-cpu qemu64` or `Nehalem`, r1
+  stops at once on "X64 Exception Type - 06(#UD - Invalid Opcode)". Under
+  KVM on a v3 host, as in r1's own checks, it boots. AARCH64 is not
+  affected.
+- **X64 is now built for baseline x86-64**: `-march=x86-64` on edk2's X64
+  C flags, in the build's own `tools_def.txt` (no edk2 file changes).
+  A new check, before packing, holds every X64 module of each image (SEC,
+  PEI, DXE, the Shell) to it twice: its makefiles compile with
+  `-march=x86-64`, and its code, disassembled, holds no instruction of
+  x86-64-v2, -v3 or -v4 (CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3,
+  SSE4.1/4.2, BMI1, BMI2, LZCNT, MOVBE, AVX, AVX2, FMA, F16C, AVX-512),
+  nor of AES-NI, PCLMULQDQ, SHA, ADX, GFNI or RDSEED.
+  It fails on a build without the pin.
+- **CI's boots on epoll, not io_uring.** An intermittent virtio-gpu boot
+  hang on CI points, by the state QEMU was left in, to the runner's QEMU
+  (Ubuntu's 10.2.1), whose io_uring main loop can lose a wakeup (fixed
+  upstream in QEMU 10.2.2, 961fcc0f22 and 2ae361ef1d), not to the
+  firmware. CI now
+  sets `kernel.io_uring_disabled=2` before the boots and states the
+  setting and QEMU's version in its log. A consumer that boots on
+  Ubuntu 26.04's QEMU 10.2.1 with io_uring allowed may meet the same hang,
+  with any firmware.
 
 - **The regression.** On r1, both arches and both flavours, a Ctrl-C typed on
   the serial console (0x03) did not stop a running Shell command or script:

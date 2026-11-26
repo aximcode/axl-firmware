@@ -469,6 +469,104 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     - *Measured* on r2's four images (AlmaLinux 10 x86_64): X64 150 GUIDs,
       AARCH64 123, the same on both readings, both flavours.
 
+24. **X64 code for baseline x86-64, and checked** (owner, 2026-11-25, for
+    r2). edk2's GCC X64 flags name no `-march`, so the compiler's own
+    default decides. GitHub's Ubuntu 26.04 runners install Ubuntu's
+    `amd64v3` packages, whose gcc (15.2.0-16ubuntu1, `--with-arch-64=x86-64-v3`)
+    defaults to x86-64-v3, and so does AlmaLinux 10's (RHEL's) gcc 14.4.1
+    (`--with-arch_64=x86-64-v3`), so local builds were v3 too. r1's X64
+    images, built on the runner, hold BMI1, BMI2,
+    MOVBE and LZCNT instructions: they fault (#UD) on a CPU before Haswell,
+    and under TCG with a CPU model that lacks those (`qemu64`, `Nehalem`).
+    The boot checks missed it: X64 boots under KVM on the runner's own CPU,
+    and the TCG fallback uses `-cpu max`.
+    - *The pin.* `build.sh` appends `-march=x86-64` to each flavour's
+      `<TARGET>_GCC_X64_CC_FLAGS` in the workspace's own `Conf/tools_def.txt`
+      (`pin_x64_march`), the copy BuildEnv makes of the template, and
+      refuses a template without exactly one such line per flavour built.
+      No edk2 file is patched. `build` has no option that adds tool flags
+      (its `-D` defines reach only what a DSC reads, and `OvmfPkgX64.dsc`'s
+      `[BuildOptions]` read none for this), and a DSC `[BuildOptions]` or an
+      overlay DSC would be a patch to edk2's source; the workspace's
+      `tools_def.txt` is edk2's own place for a toolchain's flags, and
+      every X64 C compile, of every module and library, starts from those
+      lines (the DSC's and INFs' flags are appended to them, and none names
+      a `-march`). Only the C compiles need it: NASM and `.S` sources are
+      hand-written, and with LTO the link generates code from the options
+      each object was compiled with (measured with Ubuntu's amd64v3 gcc
+      15.2.0: an LTO object compiled with `-march=x86-64` and linked
+      without it has no BMI, MOVBE, LZCNT or POPCNT instruction, and one
+      compiled without it and linked with it still has them). BaseTools'
+      host tools are built for the build host and are not part of an image.
+    - *AARCH64 is not affected.* The cross compiler
+      (`gcc-15-aarch64-linux-gnu` 15.2.0-16ubuntu1cross1) has no
+      `--with-arch`/`--with-cpu`, and its predefined macros are the same on
+      a runner-like `amd64v3` install and a plain one (`-march`/`-mcpu`
+      unset, `__ARM_ARCH 8`, no `__ARM_FEATURE_*` beyond the default).
+    - *The check* (`lib/axlfw/isa.py`, before packing, X64 DEBUG and
+      RELEASE). Every module in the code FD's volumes, by edk2's build
+      report (as the licence lists read it, §4.22), is checked two ways:
+      its `GNUmakefile`, and each linked library's, compiles C with
+      `-march=x86-64` as its last `-march`; and its ELF
+      (`DEBUG/<name>.debug`, whose `.text` GenFw makes the module's PE),
+      disassembled by the host's `objdump -d -M intel`, holds inside its
+      function symbols (STT_FUNC with a size) no instruction of a later
+      level, nor of an extension in no level. The levels are the x86-64
+      psABI's: v2 CMPXCHG16B, LAHF-SAHF, POPCNT, SSE3, SSSE3, SSE4.1,
+      SSE4.2; v3 AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, OSXSAVE; v4
+      AVX-512. In no level, and so on no CPU by its level alone: AES-NI,
+      PCLMULQDQ, SHA, ADX, GFNI, RDSEED. Each is scanned by the mnemonics it
+      adds (`isa.EXTENSIONS`, held whole by a unit test); AVX, AVX2, FMA,
+      F16C and AVX-512 as every VEX or EVEX mnemonic (a `v` mnemonic other
+      than VMX, SVM, VMGEXIT, VERR and VERW; objdump's `{vex}` and `{evex}`
+      pseudo-prefixes skipped to reach it), and AVX-512's mask instructions (`k...`);
+      `pextrw` to memory is SSE4.1's (to a register, SSE2's). The flags
+      route also refuses an extension enabled after the `-march`
+      (`-mbmi2`, `-maes`, ...). A function symbol inside another is merged
+      into the outer's range.
+      OSXSAVE is the OS's XSAVE support, not an instruction a compiler
+      emits. TZCNT stays in the list though a CPU without BMI1 runs its
+      encoding as BSF: GCC emits that encoding at baseline only when
+      optimizing for speed, and edk2 builds `-Os`. Only function symbols
+      are read because edk2's linker script puts `.rodata` into `.text`:
+      on a baseline build, the whole `.text` decodes 143 data bytes as
+      instructions of later levels (137 VEX, 5 LAHF/SAHF, 1 SSE3; 78 in
+      TlsDxe's tables), where the functions hold none. What lies outside
+      them is hand-written NASM or GAS, which `-march` does not touch and
+      which edk2 runs only after a CPUID check. ResetVector, NASM straight
+      to a binary, has no ELF and no object, and is counted as without
+      code. Not re-run by `build.sh check`, which has no workspace.
+    - *Measured* (Ubuntu 26.04 with the runner's `amd64v3` gcc 15.2.0, in a
+      container on AlmaLinux 10 x86_64; X64 RELEASE). Without the pin:
+      2055 instructions beyond x86-64 in 118 of the 150 modules (BMI2
+      1106, MOVBE 500, BMI1 440, LZCNT 9; 47 in SecMain, 5 in PeiCore,
+      80 in DxeCore, 53 in the Shell), and 357 makefiles without the
+      pin; TCG with `-cpu qemu64` and `-cpu Nehalem` stops at once on
+      "X64 Exception Type - 06(#UD - Invalid Opcode)", `-cpu max` reaches
+      the Shell. On AlmaLinux 10's own gcc 14.4.1, the r2 workspace built
+      before the pin fails the same way: 357 makefiles, and 1887 (DEBUG)
+      and 1972 (RELEASE) instructions in 117 modules. With the pin (X64
+      DEBUG and RELEASE, the runner's gcc): no makefile without
+      it and no instruction beyond x86-64, in all 150 modules (RELEASE
+      14751 function ranges and 1054972 instructions, DEBUG 17571 and
+      1343322)
+      and their 207 libraries, and both images reach the Shell under TCG
+      with `qemu64` and `Nehalem` (9 s).
+25. **CI's QEMU main loop on epoll** (owner, 2026-11-25; §5 item 7's cause).
+    Before the boots, CI sets `kernel.io_uring_disabled=2`, so QEMU's main
+    loop uses epoll, as on the AlmaLinux 10 hosts the boots were developed
+    on (whose kernel sets it so), and the log states the setting and
+    QEMU's version. Never a retry. Ubuntu
+    26.04's QEMU (`1:10.2.1+ds-1ubuntu3.3`) uses io_uring for its main loop
+    (`fdmon-io_uring`) where the kernel allows it, and 10.2.1 can lose a
+    wakeup there, which is what the record of the one hang since points to
+    (§5 item 7; not reproduced with io_uring enabled, since the hosts here
+    disable it and a shared host's kernel setting was left alone): fixed
+    upstream by 961fcc0f22 ("fdmon-io_uring: check CQ
+    ring directly in gsource_check", 2026-02-13) with its companion
+    2ae361ef1d, both first in QEMU v10.2.2. A fixed QEMU in CI is §5
+    item 8.
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact
@@ -495,41 +593,51 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    first patch to change the Shell's behaviour rather than restore it.
    *Recommendation:* leave it unless a consumer needs serial Ctrl-S; no
    axl-sdk test checks a pause.
-7. **An intermittent virtio-gpu boot hang on CI** (raised 2026-11-25). The
-   r2 tag's run (45708268326, e99510e) failed two virtio-gpu boots, each
-   `no Shell prompt within 180 s`; the main run on the same commit
-   (45708237045) and earlier runs passed every boot. What is known, from the
-   transcripts and the artifact's file times: AARCH64 DEBUG stopped within
-   2 s of starting, after Tcg2's "Not Found" lines and before the first
-   console output, so while PlatformBootManagerBeforeConsole connects the
-   display (VirtioGpuDxe's first control-queue requests); X64 RELEASE (KVM)
-   stopped within 2 s, after the console's second mode set (160x42) and its
-   clear, before `BdsDxe: loading Boot0001`. The two hung boots overlapped
-   in time but started 28 s apart, on different image sets. Both windows
-   hold VirtioGpuDxe round trips, whose `VirtioFlush` polls the used ring
-   with no time limit; no other display hung. QEMU itself was alive: each
-   next boot started 180 s later, to the artifact's 2 s resolution, so the
-   monitor's `quit` was answered at once. No key had been sent (the check
-   types only after `Press ESC in`), so patch 0004 and the check's keys are
-   not involved, and the `ESC[=3h` the console reader leaves unstripped is
-   in every passing transcript too. QEMU's virtio-gpu device code is the
-   same in 10.0.0 and CI's 10.2.1 (`hw/display/virtio-gpu.c` and
-   `virtio-gpu-base.c` differ only in error plumbing and output names). Not
-   reproduced locally (AlmaLinux 10 x86_64): 30 X64 RELEASE boots on QEMU
-   10.0.0, and on Ubuntu 26.04's own QEMU 10.2.1+ds-1ubuntu3.3 (in a
-   container) 23 X64 RELEASE and 14 AARCH64 DEBUG boots, 14 of them on one
-   CPU; each reached the Shell in 2.6 to 4 s. Not known: whether the guest
-   was waiting on a request QEMU never took, on one QEMU answered, or
-   elsewhere. A boot given up on now keeps QEMU's state (`<boot>.monitor`:
-   the registers twice, and each virtio queue's indices as QEMU and the guest
-   left them), which tells those apart. *Recommendation:* re-run CI with the
-   record in place, and no retry meanwhile, since a retry would hide a real
-   hang in a release. If it recurs, the record says whom to report it to:
-   QEMU (or, under KVM, KVM's ioeventfd) for an avail index past QEMU's
-   `last_avail_idx`; QEMU for a request it took (`inuse` above 0) but never
-   put in the used ring; edk2 for VirtioGpuDxe waiting on a request already
-   answered (the guest's used index equal to its avail index), or a vCPU
-   elsewhere.
+7. **An intermittent virtio-gpu boot hang on CI** (raised 2026-11-25;
+   **resolved** 2026-11-25: §4.25). The r2 tag's run (45708268326, e99510e)
+   failed two virtio-gpu boots, each `no Shell prompt within 180 s`; other
+   runs passed every boot. Each hang came within 2 s of the boot's start,
+   while BDS drew on the display through VirtioGpuDxe, whose `VirtioFlush`
+   polls the used ring for a synchronous control request with no time
+   limit; it was never reproduced locally (AlmaLinux 10 x86_64, QEMU
+   10.0.0 and, in a container, Ubuntu 26.04's QEMU 10.2.1: 67 boots).
+   - *The cause*, as the record points to it (not reproduced with
+     io_uring enabled). QEMU 10.2.1's io_uring main loop (`fdmon-io_uring`) can
+     lose a wakeup: an event already in the completion ring is not seen,
+     so the main loop sleeps until another fd event, and the guest's
+     request (the boot logo's Blt) waits with it. Fixed upstream by
+     961fcc0f22 ("fdmon-io_uring: check CQ ring directly in
+     gsource_check", Jens Axboe, 2026-02-13) and its companion
+     2ae361ef1d, both first in QEMU v10.2.2; Ubuntu 26.04's
+     `1:10.2.1+ds-1ubuntu3.3` has neither. It never showed here because
+     AlmaLinux 10's kernel sets `kernel.io_uring_disabled=2`, so QEMU (the
+     container's too, on the same kernel) uses epoll.
+   - *The evidence.* Run 45716598952 (ae29084, with the `.monitor` record)
+     hung once, on `x64-release-virtio-gpu`. The record's monitor
+     contact is itself an fd event: its first registers put the boot
+     processor in BdsDxe (RIP 0x3EAD0B57, mapped by a rebuild of the
+     image's code), the virtio-gpu queues were then drained (`inuse` 0,
+     `last_avail_idx` = `shadow_avail_idx` = `used_idx`, 29 and 150), and
+     the transcript goes on past the give-up to the Shell's `startup.nsh`
+     countdown: the guest had waited on a request QEMU took the moment
+     its main loop woke.
+   - *The owner's decision* (2026-11-25): "Both". Now, CI disables io_uring
+     before the boots, and states the setting and QEMU's version in its
+     log (§4.25); later, the boot checks also on a fixed QEMU (item 8).
+     Never a retry, which would hide a real hang in a release.
+8. **The boot checks on a fixed QEMU in CI** (owner, 2026-11-25: to do,
+   not built yet; item 7). A CI job that runs the boot checks on a QEMU
+   with 961fcc0f22 and 2ae361ef1d (v10.2.2 or later) and io_uring left
+   enabled, so the checks also cover the main loop consumers on newer
+   distributions will run. *Recommendation:* when Ubuntu's runner QEMU
+   reaches 10.2.2 (its stable updates), or a distribution package with
+   the fixes is at hand (Debian's or Fedora's, in a container), take it
+   from there rather than building QEMU in CI; otherwise build v10.2.2 (or
+   the pinned latest stable) from source once per version, cached by its
+   tag, `--target-list=x86_64-softmmu,aarch64-softmmu`, and point
+   `QEMU_DIR` at it. The job runs `./build.sh check` on the release the
+   build job uploaded (no second edk2 build), and states `sysctl
+   kernel.io_uring_disabled` (0) and QEMU's version, as the build job does.
 
 ## 6. Assumptions
 
@@ -575,5 +683,8 @@ To verify:
 - *AARCH64's DEBUG output always holds an error line* (Tcg2's "Not Found" with
   no TPM attached), which the flavour check relies on; a tag that silences it
   needs the check adjusted.
-- *Ubuntu's compilers build the same behaviour as AlmaLinux's* (gcc 13 against
-  14): the property checks are the guard; the bytes differ.
+- *Ubuntu's compilers build the same behaviour as AlmaLinux's* (gcc 15 on the
+  runner against 14): the property checks are the guard; the bytes differ.
+  The instruction set was guarded by none of them until r2: both compilers
+  default to x86-64-v3 (the runner's `amd64v3` gcc and AlmaLinux 10's), so
+  X64 is now pinned to `-march=x86-64` and checked (§4.24).

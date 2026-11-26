@@ -10,6 +10,7 @@ against its source.
 |---|---|---|
 | git, make, gcc, xz, flock | `git make gcc xz util-linux` | `git build-essential xz-utils util-linux` |
 | libuuid's headers (BaseTools) | `libuuid-devel` | `uuid-dev` |
+| objdump, for the X64 instruction-set check | `binutils` | `binutils` (with `build-essential`) |
 | nasm, iasl | `nasm acpica-tools` | `nasm acpica-tools` |
 | an AArch64 cross gcc | `gcc-aarch64-linux-gnu` | `gcc-aarch64-linux-gnu` |
 | python3 3.9+ with venv (3.10+ for uefi_firmware's prebuilt wheel) | `python3` | `python3 python3-venv` |
@@ -55,7 +56,11 @@ Steps, in order:
    - `overlay/<Package>/`: a copy of each package a patch touches (today
      `ArmVirtPkg`, `MdeModulePkg` and `OvmfPkg`), with `patches/*.patch` applied in name order
      by `git apply`.
-   - `Conf/` and `Build/`: edk2's, from `$EDK_TOOLS_PATH/BuildEnv`.
+   - `Conf/` and `Build/`: edk2's, from `$EDK_TOOLS_PATH/BuildEnv`. Then
+     `-march=x86-64` goes on each flavour's X64 `CC_FLAGS` line in
+     `Conf/tools_def.txt`, so the X64 code is for baseline x86-64 whatever
+     the host gcc's default (Ubuntu's `amd64v3` gcc and AlmaLinux 10's
+     both default to x86-64-v3; [DESIGN.md](DESIGN.md) §4.24). No edk2 file changes.
    - The environment: `WORKSPACE=work/ws`, `PACKAGES_PATH=work/ws/overlay:<source>`,
      `EDK_TOOLS_PATH=work/ws/BaseTools`, `CONF_PATH=work/ws/Conf`. edk2 resolves
      each package path in `PACKAGES_PATH` order, so the patched copies shadow
@@ -67,7 +72,9 @@ Steps, in order:
 4. **The source is unchanged**: `git status --porcelain --ignored` of the tree
    and its submodules must say the same before and after, or the build fails.
 5. **Assemble** (`lib/axlfw/release.py`): stage the images (AARCH64's padded to
-   64 MiB), run the static checks, then the boot checks (two image sets at a
+   64 MiB), run the static checks (X64's too: every module of each X64
+   code image compiled with `-march=x86-64`, and its code, disassembled by
+   `objdump`, holding no instruction of x86-64-v2, -v3 or -v4), then the boot checks (two image sets at a
    time, `AXLFW_BOOT_JOBS`; each `expect` waits up to `AXLFW_BOOT_TIMEOUT`,
    180 s by default; console transcripts in `work/stage/boot-logs/`, with,
    for any `expect` given up on while QEMU still ran, its state from the monitor as
@@ -88,7 +95,10 @@ which adds a boot of about 5 s per image set.
 - **lint** (every push and pull request): `shellcheck`, `pyright` (strict), and
   `tests/firmware-tests.sh`.
 - **build**: Ubuntu's packages (above), KVM enabled when the runner has
-  `/dev/kvm`, the edk2 source cached by its pinned commit (`actions/cache`),
+  `/dev/kvm`, `kernel.io_uring_disabled=2` so QEMU's main loop uses epoll
+  (Ubuntu's QEMU 10.2.1 can lose a wakeup on io_uring, which hung
+  virtio-gpu boots: [DESIGN.md](DESIGN.md) §4.25), the setting and QEMU's
+  version in the log, the edk2 source cached by its pinned commit (`actions/cache`),
   `./build.sh build`, then the no-build tests again with the source and an
   install of the build, then `./build.sh check` on the tarball unpacked as a
   consumer would. The release (`dist/`) and the boot transcripts are kept as

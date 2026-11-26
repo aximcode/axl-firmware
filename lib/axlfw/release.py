@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, fv, install, volinfo, licenses as lic_mod
+from axlfw import boot, checks, fv, install, isa, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -117,6 +117,11 @@ def descriptor(img: Image, release: str, tag: str, commit: str, root: str) -> di
 
 def _json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def package_roots(ws: Path, src: Path) -> list[Path]:
+    """The package roots in PACKAGES_PATH order: the patched overlay, then the source."""
+    return [ws / "overlay", src]
 
 
 def stage_images(ws: Path, toolchain: str, stage: Path) -> list[str]:
@@ -209,7 +214,7 @@ def image_licenses(
     build's objects were compiled from (lic_mod.compiled_parts, another
     route), so a part the derivation misses is a failure.
     """
-    roots = [ws / "overlay", src]
+    roots = package_roots(ws, src)
     subs = submodule_paths(src)
     out: dict[str, list[dict[str, object]]] = {}
     problems: list[str] = []
@@ -287,6 +292,32 @@ def volinfo_checks(ws: Path, toolchain: str, stage: Path) -> list[str]:
     return problems
 
 
+def isa_checks(ws: Path, src: Path, toolchain: str) -> tuple[dict[str, dict[str, int]], list[str]]:
+    """Every X64 module in each X64 code FD built for baseline x86-64 (isa.py).
+
+    The modules are those of the FD's volumes in the build's report; each
+    is held to the pinned -march in its makefiles and to baseline
+    instructions in its code (DESIGN §4.24). Returns the counts scanned
+    per image and the problems.
+    """
+    roots = package_roots(ws, src)
+    counts: dict[str, dict[str, int]] = {}
+    problems: list[str] = []
+    for img in IMAGES:
+        if img.arch != "x64":
+            continue
+        path = img.report(ws)
+        try:
+            report = lic_mod.parse_report(path.read_text(errors="replace"))
+        except (OSError, lic_mod.ReportError) as err:
+            problems.append(f"{img.dir}: the build report {path}: {err}")
+            continue
+        arch_build = img.build(ws, toolchain) / lic_mod.EDK2_ARCH[img.arch]
+        counts[img.dir], more = isa.check_baseline(report, lic_mod.CODE_FD[img.arch], arch_build, roots)
+        problems += [f"{img.dir}: {x}" for x in more]
+    return counts, problems
+
+
 def _setting(name: str, default: str, kind: type[int] | type[float], what: str) -> int | float | str:
     """A positive number from the environment, or what is wrong with it."""
     value = os.environ.get(name, default)
@@ -355,6 +386,8 @@ def assemble(a: AssembleArgs) -> int:
     verified, more = static_checks(stage)
     problems += more
     problems += volinfo_checks(a.ws, a.toolchain, stage)
+    scanned, more = isa_checks(a.ws, a.src, a.toolchain)
+    problems += more
     debug: dict[str, dict[str, object]] = {}
     for img in IMAGES:
         facts, more = checks.build_facts(img.build(a.ws, a.toolchain), img.arch, img.flavour)
@@ -363,7 +396,18 @@ def assemble(a: AssembleArgs) -> int:
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         return 1
-    print("+ static checks passed: drivers, absent files, VolInfo agrees with the FV walker, Shells, AutoGen", flush=True)
+    print(
+        "+ static checks passed: drivers, absent files, VolInfo agrees with the FV walker, Shells, AutoGen,"
+        " X64 baseline instructions",
+        flush=True,
+    )
+    for d, c in scanned.items():
+        print(
+            f"+ {d}: baseline x86-64 in {c['modules']} modules ({c['functions']} functions,"
+            f" {c['instructions']} instructions; {c['libraries']} libraries' flags;"
+            f" {c['without_code']} without compiled code)",
+            flush=True,
+        )
     measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs")
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)

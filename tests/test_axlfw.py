@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, install, licenses, release, volinfo  # noqa: E402
+from axlfw import boot, checks, fv, install, isa, licenses, release, volinfo  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -967,6 +967,360 @@ class LicenceTests(unittest.TestCase):
         )
 
 
+def _elf(path: Path, symbols: list[tuple[str, int, int, int]]) -> None:
+    """A stand-in ELF64: a .text and a symbol table of (name, type, value, size)."""
+    strtab = b"\0"
+    syms = b"\0" * 24
+    for name, kind, value, size in symbols:
+        syms += struct.pack("<IBBHQQ", len(strtab), kind, 0, 1, value, size)
+        strtab += name.encode() + b"\0"
+    text = b"\x90" * 16
+    body = text + syms + strtab
+    shoff = 64 + len(body)
+    head = b"\x7fELF\x02\x01\x01" + b"\0" * 9 + struct.pack("<HHIQQQIHHHHHH", 1, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64, 4, 0)
+    sections = [
+        struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        struct.pack("<IIQQQQIIQQ", 0, 1, 6, 0, 64, len(text), 0, 0, 16, 0),
+        struct.pack("<IIQQQQIIQQ", 0, 2, 0, 0, 64 + len(text), len(syms), 3, 1, 8, 24),
+        struct.pack("<IIQQQQIIQQ", 0, 3, 0, 0, 64 + len(text) + len(syms), len(strtab), 0, 0, 1, 0),
+    ]
+    path.write_bytes(head + body + b"".join(sections))
+
+
+# A stand-in objdump: prints the file <elf>.dis beside the ELF it is given.
+_OBJDUMP = """#!/usr/bin/env python3
+import sys
+from pathlib import Path
+dis = Path(sys.argv[-1] + ".dis")
+if not dis.is_file():
+    sys.exit(f"objdump: {sys.argv[-1]}: no stand-in output")
+sys.stdout.write(dis.read_text())
+"""
+FUNC, OBJECT = 2, 1
+
+
+class IsaTests(unittest.TestCase):
+    """The X64 instruction-set check: baseline x86-64 only (isa.py)."""
+
+    def setUp(self) -> None:
+        self._t = tempfile.TemporaryDirectory()
+        self.root = Path(self._t.name)
+        self.objdump = self.root / "objdump"
+        self.objdump.write_text(_OBJDUMP)
+        self.objdump.chmod(0o755)
+
+    def tearDown(self) -> None:
+        self._t.cleanup()
+
+    def test_extensions(self) -> None:
+        # The whole table, exactly: the x86-64 psABI's v2 and v3 extensions
+        # (but AVX, AVX2, FMA and F16C, which are VEX), and those in no level.
+        want = {
+            ("CMPXCHG16B", "v2"): "cmpxchg16b",
+            ("LAHF-SAHF", "v2"): "lahf sahf",
+            ("POPCNT", "v2"): "popcnt",
+            ("SSE3", "v2"): "addsubpd addsubps haddpd haddps hsubpd hsubps lddqu movddup movshdup movsldup fisttp",
+            ("SSSE3", "v2"): "pabsb pabsw pabsd palignr phaddw phaddd phaddsw phsubw phsubd phsubsw pmaddubsw"
+            " pmulhrsw pshufb psignb psignw psignd",
+            ("SSE4.1", "v2"): "blendpd blendps blendvpd blendvps dppd dpps extractps insertps movntdqa mpsadbw"
+            " packusdw pblendvb pblendw pcmpeqq pextrb pextrd pextrq phminposuw pinsrb pinsrd pinsrq pmaxsb"
+            " pmaxsd pmaxud pmaxuw pminsb pminsd pminud pminuw pmovsxbw pmovsxbd pmovsxbq pmovsxwd pmovsxwq"
+            " pmovsxdq pmovzxbw pmovzxbd pmovzxbq pmovzxwd pmovzxwq pmovzxdq pmuldq pmulld ptest roundpd"
+            " roundps roundsd roundss",
+            ("SSE4.2", "v2"): "crc32 pcmpestri pcmpestrm pcmpistri pcmpistrm pcmpgtq",
+            ("BMI1", "v3"): "andn bextr blsi blsmsk blsr tzcnt",
+            ("BMI2", "v3"): "bzhi mulx pdep pext rorx sarx shlx shrx",
+            ("LZCNT", "v3"): "lzcnt",
+            ("MOVBE", "v3"): "movbe",
+            ("AES-NI", "no level"): "aesenc aesenclast aesdec aesdeclast aesimc aeskeygenassist",
+            ("PCLMULQDQ", "no level"): "pclmulqdq",
+            ("SHA", "no level"): "sha1rnds4 sha1nexte sha1msg1 sha1msg2 sha256rnds2 sha256msg1 sha256msg2",
+            ("ADX", "no level"): "adcx adox",
+            ("GFNI", "no level"): "gf2p8affineqb gf2p8affineinvqb gf2p8mulb",
+            ("RDSEED", "no level"): "rdseed",
+        }
+        self.assertEqual(isa.EXTENSIONS, {m: ext for ext, names in want.items() for m in names.split()})
+
+    def test_classify(self) -> None:
+        want = {
+            "MOVBE": ("MOVBE", "v3"),
+            "vmovdqu": isa.VECTOR,
+            "vfmadd231ps": isa.VECTOR,
+            "vcvtph2ps": isa.VECTOR,
+            "vzeroupper": isa.VECTOR,
+            "vpternlogd": isa.VECTOR,
+            "kmovw": isa.MASK,
+            "kortestq": isa.MASK,
+            "kunpckbw": isa.MASK,
+        }
+        for m, ext in want.items():
+            with self.subTest(m):
+                self.assertEqual(isa.classify(m), ext)
+        # Baseline x86-64 (SSE2 included), and what begins with v but is not VEX.
+        for m in (
+            "mov", "bsf", "bsr", "stos", "cmpxchg8b", "pextrw", "pinsrw", "pshufd", "movdqu", "paddq",
+            "rdrand", "xsave", "xgetbv", "monitor", "mwait", "endbr64", "verr", "verw", "vmcall",
+            "vmmcall", "vmgexit", "vmlaunch", "vmxon", "kill", "k",
+        ):  # fmt: skip
+            with self.subTest(m):
+                self.assertIsNone(isa.classify(m))
+
+    def test_instruction(self) -> None:
+        cases = {
+            "{vex} vpdpbusd ymm0,ymm1,ymm2": ("vpdpbusd", isa.VECTOR),
+            "{evex} vpaddd zmm0,zmm1,zmm2": ("vpaddd", isa.VECTOR),
+            "pextrw WORD PTR [rdi],xmm0,0x3": ("pextrw", ("SSE4.1", "v2")),
+            "pextrw eax,xmm0,0x3": ("pextrw", None),
+            "pinsrw xmm0,WORD PTR [rdi],0x3": ("pinsrw", None),
+            "aesenc xmm0,xmm1": ("aesenc", ("AES-NI", "no level")),
+            "shrx   rax,rax,rsi": ("shrx", ("BMI2", "v3")),
+            "mov    eax,DWORD PTR [rip+0x10]": ("mov", None),
+        }
+        for text, want in cases.items():
+            with self.subTest(text):
+                self.assertEqual(isa.instruction(text), want)
+
+    def test_mnemonic(self) -> None:
+        cases = {
+            "lock cmpxchg16b OWORD PTR [rdi]": "cmpxchg16b",
+            "rep stos BYTE PTR es:[rdi],al": "stos",
+            "rex.W andn rax,rsi,rdi": "andn",
+            "notrack jmp rax": "jmp",
+            "cs nop WORD PTR [rax+rax*1+0x0]": "nop",
+            "data16 cs nop WORD PTR [rax+rax*1+0x0]": "nop",
+            "shrx   rax,rax,rsi": "shrx",
+            "{vex} vpdpbusd ymm0,ymm1,ymm2": "vpdpbusd",
+            "": "",
+        }
+        for text, want in cases.items():
+            with self.subTest(text):
+                self.assertEqual(isa.mnemonic(text), want)
+
+    def test_functions(self) -> None:
+        elf = self.root / "m.debug"
+        _elf(elf, [("Entry", FUNC, 0x240, 0x10), ("Data", OBJECT, 0x300, 8), ("Label", FUNC, 0x400, 0), ("A", FUNC, 0x200, 4)])
+        self.assertEqual(isa.functions(elf.read_bytes()), [(0x200, 0x204, "A"), (0x240, 0x250, "Entry")])
+        _elf(elf, [("Data", OBJECT, 0x300, 8)])
+        with self.assertRaises(isa.ElfError) as cm:
+            isa.functions(elf.read_bytes())
+        self.assertEqual(str(cm.exception), "no function symbols (a stripped file?)")
+        with self.assertRaises(isa.ElfError) as cm:
+            isa.functions(b"MZ" + b"\0" * 62)
+        self.assertEqual(str(cm.exception), "not a 64-bit little-endian ELF file")
+        _elf(elf, [("A", FUNC, 0x200, 4)])
+        with self.assertRaises(isa.ElfError) as cm:
+            isa.functions(elf.read_bytes()[:-100])
+        self.assertEqual(str(cm.exception), "an unreadable section or symbol table (287 bytes)")
+        with self.assertRaises(isa.ElfError) as cm:
+            isa.functions(b"\x7fELF")
+        self.assertEqual(str(cm.exception), "not a 64-bit little-endian ELF file")
+        # A function symbol inside another: one range, the outer's.
+        _elf(elf, [("Outer", FUNC, 0x200, 0x40), ("Inner", FUNC, 0x210, 8), ("Next", FUNC, 0x240, 4)])
+        self.assertEqual(isa.functions(elf.read_bytes()), [(0x200, 0x240, "Outer"), (0x240, 0x244, "Next")])
+
+    DIS = (
+        "\nm.debug:     file format elf64-x86-64\n\n\nDisassembly of section .text:\n\n"
+        "0000000000000240 <Entry>:\n"
+        " 240:\tpush   rbp\n"
+        " 241:\tandn   rax,rsi,rdi\n"
+        " 246:\tlock cmpxchg16b OWORD PTR [rdi]\n"
+        " 24b:\tvmovdqu ymm0,YMMWORD PTR [rsi]\n"
+        " 24f:\tret\n"
+        # Data in .text (edk2's linker script puts .rodata there): no function.
+        " 250:\tvpaddd ymm1,ymm2,ymm3\n"
+        " 254:\t(bad)\n"
+        "0000000000000260 <Other>:\n"
+        " 260:\tpopcnt eax,edi\n"
+        "\t...\n"
+    )
+
+    def test_scan_text(self) -> None:
+        funcs = [(0x240, 0x250, "Entry"), (0x260, 0x264, "Other")]
+        scan = isa.scan_text(self.DIS, funcs)
+        self.assertEqual((scan.functions, scan.instructions), (2, 6))
+        self.assertEqual(
+            scan.hits,
+            [
+                isa.Hit(0x241, "andn", "BMI1", "v3", "Entry"),
+                isa.Hit(0x246, "cmpxchg16b", "CMPXCHG16B", "v2", "Entry"),
+                isa.Hit(0x24B, "vmovdqu", *isa.VECTOR, "Entry"),
+                isa.Hit(0x260, "popcnt", "POPCNT", "v2", "Other"),
+            ],
+        )
+        self.assertEqual(
+            isa.summary(scan.hits),
+            "AVX, AVX2, FMA, F16C or AVX-512 (VEX/EVEX) (v3): 1, first vmovdqu at 0x24b in Entry; "
+            "BMI1 (v3): 1, first andn at 0x241 in Entry; CMPXCHG16B (v2): 1, first cmpxchg16b at 0x246 in Entry; "
+            "POPCNT (v2): 1, first popcnt at 0x260 in Other",
+        )
+        # The same code, outside every function: nothing read.
+        self.assertEqual(isa.scan_text(self.DIS, [(0x100, 0x200, "Far")]), isa.Scan(functions=1))
+
+    def _module(self, b: Path, name: str, cc: str, dis: str | None, libs: dict[str, str]) -> None:
+        """A stand-in module build directory: its makefile, ELF and libraries."""
+        mod = b / "AppPkg" / name / name
+        (mod / "OUTPUT").mkdir(parents=True)
+        (mod / "DEBUG").mkdir()
+        (mod / "GNUmakefile").write_text(f"MODULE_NAME = {name}\nMODULE_FILE = {name}.inf\nCC_FLAGS = {cc}\n")
+        lst = [f"{mod}/OUTPUT/{name}.lib"]
+        for lib, lib_cc in libs.items():
+            d = b / "AppPkg" / "Library" / lib / lib
+            (d / "OUTPUT").mkdir(parents=True, exist_ok=True)
+            (d / "GNUmakefile").write_text(f"MODULE_NAME = {lib}\nCC_FLAGS = {lib_cc}\n")
+            lst.append(f"{d}/OUTPUT/{lib}.lib")
+        (mod / "OUTPUT" / "static_library_files.lst").write_text("\n".join(lst) + "\n")
+        if dis is not None:
+            _elf(mod / "DEBUG" / f"{name}.debug", [("Entry", FUNC, 0x240, 0x10), ("Other", FUNC, 0x260, 4)])
+            (mod / "DEBUG" / f"{name}.debug.dis").write_text(dis)
+
+    def _baseline(self, b: Path, names: list[str]) -> tuple[dict[str, int], list[str]]:
+        report = licenses.Report(
+            fds={"CODE": [licenses.Volume("FV", ["PEI Apriori", *[f"{n} (/src/AppPkg/{n}/{n}.inf)" for n in names]])]}
+        )
+        return isa.check_baseline(report, "CODE", b, [Path("/src")], str(self.objdump))
+
+    def test_check_baseline(self) -> None:
+        b = self.root / "X64"
+        clean = " 240:\tpush   rbp\n 241:\tret\n 260:\tbsf    eax,edi\n"
+        flags = "-Os -m64 -march=x86-64-v3 -mno-sse -march=x86-64 -flto"
+        self._module(b, "Sec", flags, clean, {"BaseLib": flags, "IoLib": flags})
+        self._module(b, "Dxe", flags, clean, {"BaseLib": flags})
+        # NASM straight to a binary: no ELF, no object.
+        self._module(b, "Reset", "-m64", None, {})
+        (b / "AppPkg/Reset/Reset/OUTPUT/static_library_files.lst").unlink()
+        names = ["Sec", "Dxe", "Reset"]
+        counts = {"modules": 2, "without_code": 1, "libraries": 2, "functions": 4, "instructions": 6}
+        self.assertEqual(self._baseline(b, names), (counts, []))
+
+        sec = b / "AppPkg/Sec/Sec"
+        lib = b / "AppPkg/Library/IoLib/IoLib/GNUmakefile"
+        (sec / "DEBUG/Sec.debug.dis").write_text(self.DIS)
+        (sec / "GNUmakefile").write_text("MODULE_NAME = Sec\nMODULE_FILE = Sec.inf\nCC_FLAGS = -Os -m64 -flto\n")
+        lib.write_text("MODULE_NAME = IoLib\nCC_FLAGS = -march=x86-64 -march=x86-64-v3\n")
+        base = b / "AppPkg/Library/BaseLib/BaseLib/GNUmakefile"
+        base.write_text("MODULE_NAME = BaseLib\nCC_FLAGS = -msse2 -mno-sse -march=x86-64 -mbmi2 -maes\n")
+        (b / "AppPkg/Reset/Reset/OUTPUT/Reset.obj").write_bytes(b"")
+        self.assertEqual(
+            self._baseline(b, names),
+            (
+                {**counts, "without_code": 0, "instructions": 9},
+                [
+                    f"Sec: {sec}/GNUmakefile compiles with no -march, not -march=x86-64",
+                    f"Sec's library: {base} enables extensions beyond -march=x86-64: -mbmi2 -maes",
+                    f"Sec's library: {lib} compiles with -march=x86-64-v3, not -march=x86-64",
+                    f"Sec: 4 instructions beyond x86-64 in {sec}/DEBUG/Sec.debug: {isa.summary(isa.scan_text(self.DIS, [(0x240, 0x250, 'Entry'), (0x260, 0x264, 'Other')]).hits)}",
+                    f"Reset: {b}/AppPkg/Reset/Reset/DEBUG/Reset.debug missing, though the module compiled objects",
+                ],
+            ),
+        )
+        # An objdump that fails, and one that prints no instruction.
+        (sec / "DEBUG/Sec.debug.dis").unlink()
+        shutil.rmtree(b / "AppPkg/Reset")
+        elf = sec / "DEBUG/Sec.debug"
+        self.assertEqual(
+            self._baseline(b, ["Sec"])[1][3:],
+            [
+                f"Sec: {elf}: {self.objdump} failed (status 1): objdump: {elf}: no stand-in output",
+                "FD CODE: no module scanned",
+            ],
+        )
+        (sec / "DEBUG/Sec.debug.dis").write_text("\nDisassembly of section .text:\n")
+        self.assertEqual(
+            self._baseline(b, ["Sec"])[1][3:],
+            [f"Sec: {elf}: {self.objdump}'s output has no instruction inside a function", "FD CODE: no module scanned"],
+        )
+        self.assertEqual(
+            self._baseline(b, []), ({**counts, "modules": 0, "without_code": 0, "libraries": 0, "functions": 0, "instructions": 0}, ["FD CODE: no module scanned"])
+        )
+
+    def test_release_isa_checks_reads_each_x64_report(self) -> None:
+        # Each X64 image set's own report, FD and build; AARCH64's reports
+        # (not reports at all here) are never read.
+        ws, src = self.root / "ws", self.root / "src"
+        ws.mkdir()
+        text = (FIXTURES / "licenses" / "report.txt").read_text()
+        for target in ("DEBUG", "RELEASE"):
+            (ws / f"report-X64-{target}.txt").write_text(text)
+            (ws / f"report-AARCH64-{target}.txt").write_text("not a report")
+        calls: list[tuple[str, Path, list[Path]]] = []
+
+        def fake(
+            report: licenses.Report, fd: str, arch_build: Path, roots: list[Path], objdump: str = "objdump"
+        ) -> tuple[dict[str, int], list[str]]:
+            calls.append((fd, arch_build, roots))
+            return {"modules": len(calls)}, [f"problem {len(calls)}"]
+
+        with mock.patch.object(isa, "check_baseline", fake):
+            got = release.isa_checks(ws, src, "GCC")
+        self.assertEqual(
+            got, ({"x64": {"modules": 1}, "release/x64": {"modules": 2}}, ["x64: problem 1", "release/x64: problem 2"])
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("OVMF_CODE", ws / "Build/OvmfX64/DEBUG_GCC/X64", [ws / "overlay", src]),
+                ("OVMF_CODE", ws / "Build/OvmfX64/RELEASE_GCC/X64", [ws / "overlay", src]),
+            ],
+        )
+
+    def test_assemble_stops_on_an_isa_problem(self) -> None:
+        # The ISA check's problems stop assemble before any boot.
+        a = release.AssembleArgs(
+            ws=self.root / "ws", src=self.root / "src", dist=self.root / "dist", stage=self.root / "stage",
+            release="r", tag="t", commit="c", url="u", fixes=[], toolchain="GCC", release_date="01/01/2026",
+            compilers={}, defines={}, pcds={}, patches=[], repo_commit="none", repo_dirty=0, built_by="local",
+            qemu_dir=None,
+        )  # fmt: skip
+        err = io.StringIO()
+        with (
+            mock.patch.object(release, "stage_images", return_value=[]),
+            mock.patch.object(release, "static_checks", return_value=({}, [])),
+            mock.patch.object(release, "volinfo_checks", return_value=[]),
+            mock.patch.object(release, "isa_checks", return_value=({}, ["x64: beyond"])),
+            mock.patch.object(checks, "build_facts", return_value=({}, [])),
+            mock.patch.object(release, "boot_checks", side_effect=AssertionError("booted")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(release.assemble(a), 1)
+        self.assertEqual(err.getvalue(), "FAIL: x64: beyond\n")
+
+    def test_release_isa_checks(self) -> None:
+        # Both X64 image sets, from their own reports; AARCH64 is not read.
+        ws = self.root / "ws"
+        ws.mkdir()
+        counts, problems = release.isa_checks(ws, self.root / "src", "GCC")
+        self.assertEqual(counts, {})
+        self.assertEqual(
+            problems,
+            [
+                f"x64: the build report {ws}/report-X64-DEBUG.txt: [Errno 2] No such file or directory: '{ws}/report-X64-DEBUG.txt'",
+                f"release/x64: the build report {ws}/report-X64-RELEASE.txt: [Errno 2] No such file or directory: "
+                f"'{ws}/report-X64-RELEASE.txt'",
+            ],
+        )
+
+    def test_host_compiler(self) -> None:
+        # The scan on real code: the host's gcc builds one file for each
+        # level, and the host's objdump reads it. gcc's own default may be
+        # any level (Ubuntu's amd64v3 gcc: x86-64-v3), so each is named.
+        gcc, objdump = shutil.which("gcc"), shutil.which("objdump")
+        if gcc is None or objdump is None or os.uname().machine != "x86_64":
+            self.skipTest("SKIP: needs an x86_64 host with gcc and objdump")
+        src = self.root / "t.c"
+        src.write_text(
+            "unsigned long long Mask(unsigned long long a, unsigned long long b) { return (a & ~b) >> (b & 63); }\n"
+            "int Count(unsigned long long x) { return __builtin_popcountll(x); }\n"
+        )
+        got: dict[str, set[str]] = {}
+        for level in ("x86-64", "x86-64-v2", "x86-64-v3"):
+            obj = self.root / f"{level}.o"
+            subprocess.run([gcc, "-Os", f"-march={level}", "-c", str(src), "-o", str(obj)], check=True)
+            got[level] = {f"{h.mnemonic} {h.level}" for h in isa.scan_elf(obj, objdump).hits}
+        self.assertEqual(
+            got, {"x86-64": set(), "x86-64-v2": {"popcnt v2"}, "x86-64-v3": {"andn v3", "shrx v3", "popcnt v2"}}
+        )
+
+
 VOLINFO = FIXTURES / "volinfo"
 
 
@@ -1662,6 +2016,62 @@ class BuildShTests(unittest.TestCase):
                 env={**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(t).parent)},
             )
             self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "none -1\n", ""))
+
+    def test_pin_x64_march(self) -> None:
+        here = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as t:
+            tools_def = Path(t) / "tools_def.txt"
+            text = (
+                "DEFINE GCC_X64_CC_FLAGS = -m64\n"
+                "  DEBUG_GCC_X64_CC_FLAGS        = DEF(GCC_X64_CC_FLAGS) -flto\n"
+                "  DEBUG_GCC_X64_DLINK_FLAGS     = -flto -Os\n"
+                "RELEASE_GCC_X64_CC_FLAGS\t= DEF(GCC_X64_CC_FLAGS) -flto\n"
+                "  NOOPT_GCC_X64_CC_FLAGS        = -O0\n"
+                "  DEBUG_GCC_AARCH64_CC_FLAGS    = -flto\n"
+                "*_GCC_X64_ASM_FLAGS = -m64\n"
+            )
+
+            def pin(*targets: str) -> tuple[int, str, str]:
+                r = subprocess.run(
+                    ["bash", "-c", '. "$1"; shift; pin_x64_march "$@"', "-", str(here / "build.sh"), str(tools_def),
+                     "-march=x86-64", *targets],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )  # fmt: skip
+                return r.returncode, r.stdout, r.stderr
+
+            pinned = (
+                text.replace("-flto\n", "-flto -march=x86-64\n", 1)
+                .replace("\t= DEF(GCC_X64_CC_FLAGS) -flto\n", "\t= DEF(GCC_X64_CC_FLAGS) -flto -march=x86-64\n")
+                .replace("-O0\n", "-O0 -march=x86-64\n")
+            )
+            tools_def.write_text(text)
+            self.assertEqual(pin("DEBUG", "RELEASE"), (0, "", ""))
+            self.assertEqual(tools_def.read_text(), pinned)
+            self.assertEqual(sorted(p.name for p in Path(t).iterdir()), ["tools_def.txt"])
+            # The template's CRLF: the flag before each CR, which edk2's
+            # parser (universal newlines) would end the line at.
+            tools_def.write_bytes(text.replace("\n", "\r\n").encode())
+            self.assertEqual(pin("DEBUG", "RELEASE"), (0, "", ""))
+            self.assertEqual(tools_def.read_bytes(), pinned.replace("\n", "\r\n").encode())
+            # A flag already after a CR does not count as pinned.
+            tools_def.write_bytes(pinned.replace("-flto -march", "-flto\r -march").encode())
+            self.assertEqual(
+                pin("DEBUG"),
+                (1, "", f"build.sh: {tools_def}: 0 DEBUG_GCC_X64_CC_FLAGS lines to pin -march=x86-64 on, not 1\n"),
+            )
+            # A flavour with no line, and one with two.
+            tools_def.write_text(text.replace("RELEASE_GCC_X64_CC_FLAGS", "RELEASE_GCC_X64_XX_FLAGS"))
+            self.assertEqual(
+                pin("DEBUG", "RELEASE"),
+                (1, "", f"build.sh: {tools_def}: 0 RELEASE_GCC_X64_CC_FLAGS lines to pin -march=x86-64 on, not 1\n"),
+            )
+            tools_def.write_text(text + "  DEBUG_GCC_X64_CC_FLAGS = again\n")
+            self.assertEqual(
+                pin("DEBUG"),
+                (1, "", f"build.sh: {tools_def}: 2 DEBUG_GCC_X64_CC_FLAGS lines to pin -march=x86-64 on, not 1\n"),
+            )
 
     def _default_jobs(self, prefix: list[str], path: str) -> tuple[int, str, str]:
         here = Path(__file__).resolve().parent.parent
