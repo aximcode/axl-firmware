@@ -3,6 +3,21 @@
 The consumers' contract. A change here is agreed with the consumers first
 ([CONSUMERS.md](CONSUMERS.md)) and recorded in [DESIGN.md](DESIGN.md).
 
+**Read by consumers today, so stable** (a field may be added; none of these is
+removed, renamed or reshaped without the consumers agreeing first):
+
+| What | Read by |
+|---|---|
+| asset names `axl-firmware-<release>.tar.xz`, `…-symbols-<arch>.tar.xz`, `SHA256SUMS` | every installer and vendoring script |
+| the layout `x64/`, `aarch64/`, `release/x64/`, `release/aarch64/`, each `code.fd`, `vars.fd`, `Shell_<ARCH>.efi` | every consumer |
+| `manifest.json` `format` (2), `release`, `edk2.{tag,commit}`, `images.<dir>.{flavour,code,vars,shell}` with `size` and `sha256` | vendoring and provenance (axlvmpool's `axlvmpool firmware`, a downstream vendoring script) |
+| `images.<dir>.licenses` (`[{path, chosen}]`) | a downstream vendoring script |
+| `images.<dir>.measured.text_modes.<display>.{modes,current}` (`modes: [[cols, rows], …]`, `current: [cols, rows]`) | axl-sdk's interactive launcher (console fit, 2026-11-25) |
+| `images.x64.flavour` (`DEBUG`), `images.x64.{code,vars}.path`, `images.x64.debug.{asserts_compiled,clear_memory}` | axl-sdk's `find_debug_ovmf` |
+| `images.<dir>.code.path` (matched to the firmware in use), `images.<dir>.shell.{path,sha256}` | axl-sdk's `find_shell_efi` |
+| every `path` relative to the release directory, never escaping it; `manifest.json` at the release directory's top, found from an image within three directories | axl-sdk |
+| the descriptors' file names and numbering (DEBUG `10-`, RELEASE `20-`) | the shared descriptor search (axlvmpool, axl-sdk) |
+
 ## The release
 
 A release is a GitHub release of `aximcode/axl-firmware`, tagged
