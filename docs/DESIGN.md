@@ -1635,6 +1635,23 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     GUARDED TPM boot as its reproducer (RED now) and a rebuild; or, if r3
     should not take another patch, keep GUARDED out of the TPM boot check
     and say in CONSUMERS.md that X64 GUARDED with a TPM does not boot.
+15. **Candidates for the next release (r4), collected so it carries them
+    all at once** (opened 2026-11-26; the owner wants few releases, so
+    every documented firmware defect a consumer finds lands here first).
+    Each needs the same treatment as r3's: verified at the pinned tag, a
+    reproducer RED on the current release, a permanent check.
+    - **TerminalDxe leaves stale words on the serial stream** when a
+      four-row input line scrolls at the bottom of a 160x42 console; the
+      GOP console and sshd are clean (found by axl-sdk's console-visual
+      suite on r3, 2026-11-26; recorded in axl-sdk docs/ROADMAP.md,
+      upstream defects). No patch yet.
+    - Upstream reports for patches 0015 (DxeNetLib ASSERT without an RNG)
+      and 0016 (PcdDxe allocating under its lock), and for the defects r3
+      deliberately left alone because real firmware has them too (§4.40):
+      ConSplitter's notifies on a removed ConIn, the mode reset on a
+      ConOut join, the re-add ASSERT, TcpDxe's Cancel of a Transmit in
+      progress, MnpDxe's OUT_OF_RESOURCES, nested `Execute()`'s status,
+      ConsoleLogger's cached rows, and the Shell freeing a foreign ConOut.
 
 ## 6. Assumptions
 
