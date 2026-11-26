@@ -1,0 +1,97 @@
+Subject: [PATCH] OvmfPkg/VirtioInputDxe: the virtio mouse's wheel as RelativeMovementZ
+
+VirtioMouseHandleEvent handles only REL_X and REL_Y. QEMU's
+virtio-mouse reports a wheel (REL_WHEEL in its EV_REL bitmap, its
+wheel-axis property, on by default) and sends each wheel step as a
+REL_WHEEL event of +1 or -1, which was dropped.
+
+Add REL_WHEEL (0x08) into RelativeMovementZ, clear it with X and Y in
+GetState, and set ResolutionZ to 8 (the driver's X and Y resolution)
+when the device's EV_REL bitmap has REL_WHEEL, else 0 (no Z axis).
+ConSplitter carries Z from a pointer whose ResolutionZ is not 0.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0009-shell-delete-absent.patch to a copy of the packages it touches.
+
+---
+diff --git a/OvmfPkg/VirtioInputDxe/VirtioKeyCodes.h b/OvmfPkg/VirtioInputDxe/VirtioKeyCodes.h
+index 82f0db9..3129abe 100644
+--- a/OvmfPkg/VirtioInputDxe/VirtioKeyCodes.h
++++ b/OvmfPkg/VirtioInputDxe/VirtioKeyCodes.h
+@@ -303,8 +303,9 @@
+ /*
+  * Relative axes
+  */
+-#define REL_X  0x00
+-#define REL_Y  0x01
++#define REL_X      0x00
++#define REL_Y      0x01
++#define REL_WHEEL  0x08
+ 
+ /*
+  * Absolute axes
+diff --git a/OvmfPkg/VirtioInputDxe/VirtioMouse.c b/OvmfPkg/VirtioInputDxe/VirtioMouse.c
+index 68fe684..90c0c35 100644
+--- a/OvmfPkg/VirtioInputDxe/VirtioMouse.c
++++ b/OvmfPkg/VirtioInputDxe/VirtioMouse.c
+@@ -38,6 +38,33 @@ VirtioMouseProbe (
+   return (Bitmap & (1 << REL_X)) && (Bitmap & (1 << REL_Y));
+ }
+ 
++/**
++  Whether the device reports a wheel: REL_WHEEL in its EV_REL bitmap, as
++  QEMU's virtio-mouse does (its wheel-axis property, on by default).
++**/
++STATIC
++BOOLEAN
++VirtioMouseHasWheel (
++  IN VIRTIO_INPUT_DEV  *Dev
++  )
++{
++  EFI_STATUS  Status;
++  UINT8       Size;
++  UINT8       Bitmap;
++
++  Status = VirtioInputConfigQuerySize (Dev, VirtioInputCfgEvBits, EV_REL, &Size);
++  if (EFI_ERROR (Status) || (Size < (REL_WHEEL / 8) + 1)) {
++    return FALSE;
++  }
++
++  Status = Dev->VirtIo->ReadDevice (Dev->VirtIo, OFFSET_OF_VINPUT (Data) + (REL_WHEEL / 8), 1, 1, &Bitmap);
++  if (EFI_ERROR (Status)) {
++    return FALSE;
++  }
++
++  return (Bitmap & (1 << (REL_WHEEL % 8))) != 0;
++}
++
+ // -----------------------------------------------------------------------------
+ // Function handling VirtIO mouse events
+ VOID
+@@ -74,6 +101,10 @@ VirtioMouseHandleEvent (
+           Dev->PointerState.RelativeMovementY += (INT32)Event->Value;
+           break;
+ 
++        case REL_WHEEL:
++          Dev->PointerState.RelativeMovementZ += (INT32)Event->Value;
++          break;
++
+         default:
+           break;
+       }
+@@ -141,6 +172,7 @@ VirtioMouseGetState (
+   //
+   Dev->PointerState.RelativeMovementX = 0;
+   Dev->PointerState.RelativeMovementY = 0;
++  Dev->PointerState.RelativeMovementZ = 0;
+   Dev->PointerReady                   = FALSE;
+ 
+   gBS->RestoreTPL (OldTpl);
+@@ -188,6 +220,7 @@ VirtioMouseInit (
+ 
+   Dev->PointerMode.ResolutionX = 8;
+   Dev->PointerMode.ResolutionY = 8;
++  Dev->PointerMode.ResolutionZ = VirtioMouseHasWheel (Dev) ? 8 : 0;
+   Dev->PointerMode.LeftButton  = TRUE;
+   Dev->PointerMode.RightButton = TRUE;
+ 

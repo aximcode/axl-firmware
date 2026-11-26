@@ -1,4 +1,4 @@
-Subject: [PATCH] ArmVirtPkg: add PciSioSerialDxe to ArmVirtQemu
+Subject: [PATCH] ArmVirtPkg, OvmfPkg: PciSioSerialDxe on ArmVirtQemu, connected by BDS
 
 Add MdeModulePkg's PciSioSerialDxe to ArmVirtQemu (DSC and FDF), so a
 16550 UART behind PCI, such as QEMU's pci-serial device on virt, gets
@@ -7,6 +7,16 @@ builds it. The console is unchanged: the platform boot manager
 (PlatformBootManagerLibLight) adds only the PL011 and virtio serial
 devices to ConIn, ConOut and ErrOut, so the new port is a console only
 when a ConIn, ConOut or ErrOut variable names it.
+
+PlatformBootManagerLibLight connects every device only when QEMU gives
+no boot order (ConnectDevicesFromQemu fails); with a bootindex on any
+device it connects just the boot devices, and the port had no
+EFI_SERIAL_IO until something connected it. Its
+PlatformBootManagerBeforeConsole now connects each PCI 16550 UART
+(class 07h, subclass 00h, interface 02h) non-recursively, as it
+connects displays, virtio input and RNG devices, so the port has its
+EFI_SERIAL_IO either way. OvmfPkgX64 uses another PlatformBootManagerLib
+and is not affected.
 
 axl-firmware's patch against edk2-stable202611, applied after
 0004-terminal-control-keys.patch to a copy of the packages it touches.
@@ -36,3 +46,68 @@ index 6379116..2fb9dd5 100644
  
    #
    # Video support
+diff --git a/OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBm.c b/OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBm.c
+index 7c5fe74..5044719 100644
+--- a/OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBm.c
++++ b/OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBm.c
+@@ -269,6 +269,46 @@ IsPciDisplay (
+   return IS_PCI_DISPLAY (&Pci);
+ }
+ 
++/**
++  This FILTER_FUNCTION checks if a handle corresponds to a PCI 16550 UART
++  (class 07h, subclass 00h, interface 02h), such as QEMU's pci-serial.
++**/
++STATIC
++BOOLEAN
++EFIAPI
++IsPci16550 (
++  IN EFI_HANDLE    Handle,
++  IN CONST CHAR16  *ReportText
++  )
++{
++  EFI_STATUS           Status;
++  EFI_PCI_IO_PROTOCOL  *PciIo;
++  PCI_TYPE00           Pci;
++
++  Status = gBS->HandleProtocol (
++                  Handle,
++                  &gEfiPciIoProtocolGuid,
++                  (VOID **)&PciIo
++                  );
++  if (EFI_ERROR (Status)) {
++    return FALSE;
++  }
++
++  Status = PciIo->Pci.Read (
++                        PciIo,
++                        EfiPciIoWidthUint32,
++                        0 /* Offset */,
++                        sizeof Pci / sizeof (UINT32),
++                        &Pci
++                        );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "%a: %s: %r\n", __func__, ReportText, Status));
++    return FALSE;
++  }
++
++  return IS_PCI_16550_SERIAL (&Pci);
++}
++
+ /**
+   This function checks if a handle corresponds to the Virtio Device ID given
+   at the VIRTIO_DEVICE_PROTOCOL level.
+@@ -1000,6 +1040,13 @@ PlatformBootManagerBeforeConsole (
+   //
+   FilterAndProcess (&gVirtioDeviceProtocolGuid, IsVirtioSerial, SetupVirtioSerial);
+   FilterAndProcess (&gEfiPciIoProtocolGuid, IsVirtioPciSerial, SetupVirtioSerial);
++
++  //
++  // Give PCI 16550 UARTs their EFI_SERIAL_IO_PROTOCOL (PciSioSerialDxe),
++  // whether or not QEMU supplies a boot order, so that an application finds
++  // them without a full connect. They are not added to the console.
++  //
++  FilterAndProcess (&gEfiPciIoProtocolGuid, IsPci16550, Connect);
+ }
+ 
+ /**

@@ -1,0 +1,45 @@
+Subject: [PATCH] MdeModulePkg/TerminalDxe: test the whole CHAR16 before the CHAR8 cast
+
+For the terminal types other than VT-UTF8 (PC-ANSI, VT100, VT100+,
+TTY, Linux, XtermR6, VT400, SCO), TerminalConOutOutputString casts a
+character that is not box drawing to CHAR8 and then tests the byte, so
+a character above 0x7F passes as its low byte: U+0141 is written as
+'A', U+010D as a carriage return, and U+011B as ESC when OutputEscChar
+is set. Test the CHAR16 itself (TerminalIsValidAscii and
+TerminalIsValidEfiCntlChar take a CHAR16), and compare it, not the
+byte, with ESC; a character outside ASCII is then written as '?' with
+EFI_WARN_UNKNOWN_GLYPH, as the code intends.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0007-shell-ctrl-s.patch to a copy of the packages it touches.
+
+---
+diff --git a/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConOut.c b/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConOut.c
+index 10d6695..c924d04 100644
+--- a/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConOut.c
++++ b/MdeModulePkg/Universal/Console/TerminalDxe/TerminalConOut.c
+@@ -236,17 +236,21 @@ TerminalConOutOutputString (
+ 
+         if (!TerminalIsValidTextGraphics (*WString, &GraphicChar, &AsciiChar)) {
+           //
+-          // If it's not a graphic character convert Unicode to ASCII.
++          // If it's not a graphic character convert Unicode to ASCII. The
++          // whole CHAR16 is tested, not the CHAR8 it is cast to: a character
++          // above 0x7F (U+0141, say) would otherwise pass as its low byte
++          // ('A'), or reach the terminal as a control character (U+010D as
++          // CR, U+011B as ESC).
+           //
+           GraphicChar = (CHAR8)*WString;
+ 
+-          if (!(TerminalIsValidAscii (GraphicChar) || TerminalIsValidEfiCntlChar (GraphicChar))) {
++          if (!(TerminalIsValidAscii (*WString) || TerminalIsValidEfiCntlChar (*WString))) {
+             //
+             // when this driver use the OutputString to output control string,
+             // TerminalDevice->OutputEscChar is set to let the Esc char
+             // to be output to the terminal emulation software.
+             //
+-            if ((GraphicChar == 27) && TerminalDevice->OutputEscChar) {
++            if ((*WString == 27) && TerminalDevice->OutputEscChar) {
+               GraphicChar = 27;
+             } else {
+               GraphicChar = '?';

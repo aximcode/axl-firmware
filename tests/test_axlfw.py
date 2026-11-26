@@ -102,6 +102,196 @@ class DriverListTests(unittest.TestCase):
                 self.assertEqual([d for d in checks.drivers(arch) if d.name == "PciSioSerialDxe"], [pci])
 
 
+# --- r3 console: each patch applied and compiled (checks.check_patches) -----
+_PATCH = (
+    "Subject: [PATCH] a test patch\r\n"
+    "\r\n"
+    "---\r\n"
+    "diff --git a/Pkg/Dxe/a.c b/Pkg/Dxe/a.c\n"
+    "--- a/Pkg/Dxe/a.c\n"
+    "+++ b/Pkg/Dxe/a.c\n"
+    "@@ -1,2 +1,4 @@\n"
+    " int a;\r\n"
+    "+int added;\r\n"
+    "+\r\n"
+    " int b;\r\n"
+    "diff --git a/Pkg/Include/k.h b/Pkg/Include/k.h\n"
+    "--- a/Pkg/Include/k.h\n"
+    "+++ b/Pkg/Include/k.h\n"
+    "@@ -1 +1,2 @@\n"
+    " #define A 1\n"
+    "+#define B 2\n"
+    "diff --git a/Pkg/Pkg.dsc b/Pkg/Pkg.dsc\n"
+    "--- a/Pkg/Pkg.dsc\n"
+    "+++ b/Pkg/Pkg.dsc\n"
+    "@@ -1 +1,2 @@\n"
+    "   Pkg/Dxe/Dxe.inf\n"
+    "+  Pkg/More/More.inf\n"
+)
+
+
+class PatchCheckTests(unittest.TestCase):
+    """Each required patch applied to the overlay, and its C compiled from there."""
+
+    def tree(self, t: str) -> tuple[Path, Path, Path, list[Path]]:
+        root = Path(t)
+        ws, src = root / "ws", root / "src"
+        for base, extra in ((ws / "overlay", True), (src, False)):
+            (base / "Pkg/Dxe").mkdir(parents=True)
+            (base / "Pkg/Include").mkdir(parents=True)
+            (base / "Pkg/Dxe/a.c").write_bytes(b"int a;\r\n" + (b"int added;\r\n\r\n" if extra else b"") + b"int b;\r\n")
+            (base / "Pkg/Include/k.h").write_text("#define A 1\n" + ("#define B 2\n" if extra else ""))
+            (base / "Pkg/Pkg.dsc").write_text("  Pkg/Dxe/Dxe.inf\n" + ("  Pkg/More/More.inf\n" if extra else ""))
+        patch = root / "0009-test.patch"
+        patch.write_bytes(_PATCH.encode())
+        out = ws / "Build/P/DEBUG_GCC/X64/Pkg/Dxe/Dxe/OUTPUT"
+        out.mkdir(parents=True)
+        (out / "a.obj.deps").write_text(
+            f"{out}/a.obj:  {ws}/overlay/Pkg/Dxe/a.c \\\n {ws}/overlay/Pkg/Include/k.h \\\n {src}/Pkg/Include/z.h\n"
+        )
+        return ws, src, out, [patch]
+
+    def check(self, ws: Path, src: Path, patches: list[Path], required: tuple[str, ...] = ("0009-test.patch",)) -> list[str]:
+        return checks.check_patches(patches, required, ws, src, [ws / "Build/P/DEBUG_GCC/X64"])
+
+    def test_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, _, patches = self.tree(t)
+            self.assertEqual(self.check(ws, src, patches), [])
+
+    def test_patch_files(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            _, _, _, patches = self.tree(t)
+            self.assertEqual(checks.patch_files(patches[0]), ["Pkg/Dxe/a.c", "Pkg/Include/k.h", "Pkg/Pkg.dsc"])
+
+    def test_required_patch_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, _, patches = self.tree(t)
+            self.assertEqual(
+                self.check(ws, src, patches, ("0009-test.patch", "0010-gone.patch")),
+                ["0010-gone.patch: required, but the build did not apply it"],
+            )
+
+    def test_overlay_lacks_a_line(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, _, patches = self.tree(t)
+            (ws / "overlay/Pkg/Pkg.dsc").write_text("  Pkg/Dxe/Dxe.inf\n")
+            self.assertEqual(
+                self.check(ws, src, patches),
+                [f"0009-test.patch: {ws}/overlay/Pkg/Pkg.dsc is not the source's Pkg/Pkg.dsc with the patches applied"],
+            )
+
+    def test_does_not_apply_again(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, _, patches = self.tree(t)
+            (src / "Pkg/Pkg.dsc").write_text("  Pkg/Other/Other.inf\n")
+            got = self.check(ws, src, patches)
+            self.assertEqual(len(got), 1)
+            self.assertRegex(
+                got[0], r"\A0009-test\.patch: does not apply to the source's files again: error: patch failed: Pkg/Pkg\.dsc:1"
+            )
+
+    def test_a_later_patch_changes_an_earlier_ones_line(self) -> None:
+        # Stacked patches: the overlay is the source with both applied.
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, _, patches = self.tree(t)
+            later = Path(t) / "0010-later.patch"
+            later.write_text(
+                "diff --git a/Pkg/Include/k.h b/Pkg/Include/k.h\n"
+                "--- a/Pkg/Include/k.h\n"
+                "+++ b/Pkg/Include/k.h\n"
+                "@@ -1,2 +1,2 @@\n"
+                " #define A 1\n"
+                "-#define B 2\n"
+                "+#define B 3\n"
+            )
+            (ws / "overlay/Pkg/Include/k.h").write_text("#define A 1\n#define B 3\n")
+            self.assertEqual(self.check(ws, src, [*patches, later], ("0009-test.patch", "0010-later.patch")), [])
+
+    def test_compiled_from_the_source(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, out, patches = self.tree(t)
+            (out / "b.obj.deps").write_text(f"{out}/b.obj:  {src}/Pkg/Dxe/a.c \\\n {src}/Pkg/Include/k.h\n")
+            self.assertEqual(
+                self.check(ws, src, patches),
+                [
+                    f"0009-test.patch: 1 objects compiled from the unpatched {src}/Pkg/Dxe/a.c, first {out}/b.obj.deps",
+                    f"0009-test.patch: 1 objects compiled from the unpatched {src}/Pkg/Include/k.h, first {out}/b.obj.deps",
+                ],
+            )
+
+    def test_not_compiled(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            ws, src, out, patches = self.tree(t)
+            (out / "a.obj.deps").write_text(f"{out}/a.obj:  {ws}/overlay/Pkg/Dxe/a.c\n")
+            self.assertEqual(
+                self.check(ws, src, patches),
+                [f"0009-test.patch: no object compiled from the patched {ws}/overlay/Pkg/Include/k.h"],
+            )
+
+    def test_required_list(self) -> None:
+        self.assertEqual(
+            checks.REQUIRED_PATCHES[:10],
+            (
+                "0001-pointer-drivers.patch",
+                "0002-bochs-display-video.patch",
+                "0003-map-debug-uart.patch",
+                "0004-terminal-control-keys.patch",
+                "0005-pci-serial.patch",
+                "0006-ps2-mouse-sio.patch",
+                "0007-shell-ctrl-s.patch",
+                "0008-terminal-widechar.patch",
+                "0009-shell-delete-absent.patch",
+                "0010-virtio-mouse-wheel.patch",
+            ),
+        )
+
+    def test_assemble_stops_on_a_patch_problem(self) -> None:
+        # Checked with the static checks, before any boot, on every image's
+        # arch directory.
+        a = release.AssembleArgs(
+            ws=Path("/nonexistent/ws"), src=Path("/nonexistent/src"), dist=Path("/nonexistent/dist"),
+            stage=Path(tempfile.mkdtemp()) / "stage", release="r", tag="t", commit="c", url="u", fixes=[],
+            toolchain="GCC", release_date="01/01/2026", compilers={}, defines={}, pcds={},
+            patches=[Path("/p/0001-pointer-drivers.patch")], repo_commit="none", repo_dirty=0, built_by="local",
+            qemu_dir=None,
+        )  # fmt: skip
+        self.addCleanup(shutil.rmtree, a.stage.parent)
+        err = io.StringIO()
+        with (
+            mock.patch.object(release, "stage_images", return_value=[]),
+            mock.patch.object(release, "static_checks", return_value=({}, [])),
+            mock.patch.object(release, "volinfo_checks", return_value=[]),
+            mock.patch.object(release, "isa_checks", return_value=({}, [])),
+            mock.patch.object(checks, "build_facts", return_value=({}, [])),
+            mock.patch.object(checks, "check_patches", return_value=["0007: no"]) as patched,
+            mock.patch.object(release, "boot_checks", side_effect=AssertionError("booted")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(release.assemble(a), 1)
+        self.assertEqual(err.getvalue(), "FAIL: 0007: no\n")
+        build = "/nonexistent/ws/Build"
+        patched.assert_called_once_with(
+            a.patches,
+            checks.REQUIRED_PATCHES,
+            a.ws,
+            a.src,
+            [
+                Path(f"{build}/OvmfX64/DEBUG_GCC/X64"),
+                Path(f"{build}/ArmVirtQemu-AArch64/DEBUG_GCC/AARCH64"),
+                Path(f"{build}/OvmfX64/RELEASE_GCC/X64"),
+                Path(f"{build}/ArmVirtQemu-AArch64/RELEASE_GCC/AARCH64"),
+            ],
+        )
+
+    def test_repository_patches_are_required(self) -> None:
+        here = sorted(p.name for p in (Path(__file__).resolve().parent.parent / "patches").glob("*.patch"))
+        self.assertEqual(sorted(checks.REQUIRED_PATCHES), here)
+
+
+# --- end of r3 console: each patch applied and compiled ----------------------
+
+
 def _pe(machine: int, magic: int = 0x20B, subsystem: int = 10) -> bytes:
     data = bytearray(0x200)
     data[0:2] = b"MZ"
@@ -540,6 +730,136 @@ class CtrlCTests(unittest.TestCase):
             boot.TICKS,
             "@echo -off\r\nfor %a run (1 600)\r\n  echo tick %a\r\n  stall 100000\r\nendfor\r\necho ticks done\r\n",
         )
+
+
+# --- r3 console: the Ctrl-S boot check (patch 0007) -------------------------
+# A stand-in for QEMU and the Shell, for Ctrl-S: as _FAKE_SHELL, a prompt and
+# `fs0:\ticks.nsh` ticking every 20 ms (600 ticks, or "fast" 5), which 0x03
+# breaks. 0x13 while it runs pauses the ticks until the next key ("pauses"),
+# pauses them for good ("stuck"), or is ignored ("ignored"). While paused,
+# the tick on its way is held, as the Shell holds the OutputString that
+# found the pause. DEL (0x7f) at the prompt erases the last character typed,
+# or, "ignored", nothing (VT100's Delete at the end of the line).
+_FAKE_SHELL_CTRL_S = r"""
+import os, sys, threading, time
+mode = sys.argv[1]
+lock = threading.Lock()
+stop = threading.Event()
+running = threading.Event()
+go = threading.Event()
+go.set()
+def out(s):
+    with lock:
+        os.write(1, s.encode())
+def ticks():
+    for n in range(1, (5 if mode == "fast" else 600) + 1):
+        go.wait()
+        if stop.is_set():
+            out("Shell> ")
+            running.clear()
+            return
+        out(f"tick {n}\r\n")
+        time.sleep(0.02)
+    out("ticks done\r\nShell> ")
+    running.clear()
+out("Shell> ")
+line = b""
+while (c := os.read(0, 1)):
+    if running.is_set():
+        if c == b"\x03":
+            stop.set()
+            go.set()
+        elif c == b"\x13" and mode in ("pauses", "stuck"):
+            go.clear()
+        elif mode == "pauses":
+            go.set()
+        continue
+    if c == b"\x7f":
+        if mode != "ignored":
+            line = line[:-1]
+        continue
+    if c == b"\r":
+        out("\r\n")
+        if line == b"fs0:\\" + b"ticks.nsh":
+            stop.clear()
+            go.set()
+            running.set()
+            threading.Thread(target=ticks, daemon=True).start()
+        elif line.startswith(b"echo "):
+            out(line[5:].decode() + "\r\nShell> ")
+        line = b""
+    else:
+        out(c.decode())
+        line += c
+"""
+
+
+class CtrlSTests(unittest.TestCase):
+    """A serial Ctrl-S must pause a running script's output, and a key resume it."""
+
+    def guest(self, t: str, mode: str) -> boot.Guest:
+        g = boot.Guest([sys.executable, "-c", _FAKE_SHELL_CTRL_S, mode], Path(t), Path(t), "fake", 5)
+        self.addCleanup(g.close)
+        g.prompt()
+        return g
+
+    def pause(self, g: boot.Guest) -> dict[str, int]:
+        return boot.ctrl_s_pause(g, settle=0.3, quiet=0.5, bound=2)
+
+    def test_pauses(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            got = self.pause(self.guest(t, "pauses"))
+            self.assertEqual(sorted(got), ["paused_after", "resumed_with"])
+            self.assertEqual(got["resumed_with"], got["paused_after"] + 1)
+            self.assertGreaterEqual(got["paused_after"], 3)
+
+    def test_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "ignored")
+            with self.assertRaises(boot.BootError) as err:
+                self.pause(g)
+            self.assertRegex(
+                str(err.exception),
+                r"\Afake: a serial Ctrl-S \(0x13\) did not pause the script's output:"
+                r" \d+ ticks \(tick \d+ to tick \d+\) in the 0\.5 s from 0\.3 s after it\Z",
+            )
+
+    def test_stuck(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "stuck")
+            with self.assertRaises(boot.BootError) as err:
+                self.pause(g)
+            self.assertRegex(
+                str(err.exception).split("\n")[0],
+                r"\Afake: no tick \d+ after a key, to resume output paused by a serial Ctrl-S \(0x13\),"
+                r" within 2 s; console ends:\Z",
+            )
+
+    def test_del_is_backspace(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            boot.del_backspace(self.guest(t, "pauses"))
+
+    def test_del_is_not_backspace(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "ignored")
+            with self.assertRaises(boot.BootError) as err:
+                boot.del_backspace(g)
+            self.assertEqual(
+                str(err.exception),
+                "fake: a serial DEL (0x7f) is not Backspace: `echo abX`, DEL, `c` printed 'abXc', not 'abc'",
+            )
+
+    def test_ran_to_its_end(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            g = self.guest(t, "fast")
+            with self.assertRaises(boot.BootError) as err:
+                self.pause(g)
+            self.assertEqual(
+                str(err.exception), "fake: the script ended before a serial Ctrl-S (0x13) could pause it"
+            )
+
+
+# --- end of r3 console: the Ctrl-S boot check --------------------------------
 
 
 class BootChecksTests(unittest.TestCase):
@@ -1304,6 +1624,7 @@ class IsaTests(unittest.TestCase):
             mock.patch.object(release, "volinfo_checks", return_value=[]),
             mock.patch.object(release, "isa_checks", return_value=({}, ["x64: beyond"])),
             mock.patch.object(checks, "build_facts", return_value=({}, [])),
+            mock.patch.object(checks, "check_patches", return_value=[]),
             mock.patch.object(release, "boot_checks", side_effect=AssertionError("booted")),
             contextlib.redirect_stderr(err),
         ):
@@ -1558,7 +1879,7 @@ def _fake_tree(
     manifest: Manifest = {
         "format": fmt,
         "release": rel,
-        "edk2": {"tag": tag, "commit": commit},
+        "edk2": {"tag": tag, "commit": commit, "patches": [{"name": n, "sha256": "0" * 64} for n in checks.REQUIRED_PATCHES]},
         "default_flavour": "DEBUG",
         "hardware_images": {"x64": "release/x64", "aarch64": "release/aarch64"},
         "images": images,
@@ -2004,6 +2325,11 @@ class ReleaseCheckTests(unittest.TestCase):
         def no_hardware(m: Manifest) -> None:
             del m["hardware_images"]
 
+        # r3 console: a required patch not listed as applied.
+        def patch_missing(m: Manifest) -> None:
+            edk2 = cast("dict[str, list[dict[str, str]]]", m["edk2"])
+            edk2["patches"] = [x for x in edk2["patches"] if x["name"] != "0007-shell-ctrl-s.patch"]
+
         want = sorted(img.dir for img in release.IMAGES)
         cases: dict[str, tuple[Callable[[Manifest], None], str]] = {
             "moved": (moved, "FAIL: x64: the manifest's code is 'release/x64/code.fd', not 'x64/code.fd'\n"),
@@ -2029,6 +2355,10 @@ class ReleaseCheckTests(unittest.TestCase):
             ),
             "hardware DEBUG": (hardware_debug, "FAIL: hardware_images.x64: 'x64' is of flavour 'DEBUG', not RELEASE\n"),
             "no hardware": (no_hardware, "FAIL: manifest: no hardware_images\n"),
+            "patch missing": (
+                patch_missing,
+                "FAIL: manifest edk2.patches: 0007-shell-ctrl-s.patch: required, but the build did not apply it\n",
+            ),
         }
         for label, (tamper, text) in cases.items():
             with self.subTest(label):
@@ -2130,6 +2460,7 @@ class HardwareImagesTests(unittest.TestCase):
             mock.patch.object(release, "volinfo_checks", return_value=[]),
             mock.patch.object(release, "isa_checks", return_value=({}, [])),
             mock.patch.object(checks, "build_facts", return_value=({}, [])),
+            mock.patch.object(checks, "check_patches", return_value=[]),
             mock.patch.object(release, "boot_checks", side_effect=AssertionError("booted")),
             contextlib.redirect_stderr(err),
         ):

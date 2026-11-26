@@ -92,7 +92,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
      Upstream added none of the patches' drivers, nor QemuVideoDxe on
      ArmVirtQemu, nor the write-combine PCD, so patches 0001 and 0002 stay
      whole, regenerated against 202611; 202611 needed a third, 0003 (§4.19),
-     and a fourth, 0004 (§4.21), in r2; r3 adds a fifth, 0005 (§4.26). Changes met: ArmVirtQemu's components and
+     and a fourth, 0004 (§4.21), in r2; r3 adds a fifth, 0005 (§4.26), and
+     0006-0010 (§4.28). Changes met: ArmVirtQemu's components and
      PCDs partly moved into `ArmVirt.dsc.inc`; VirtioKeyboardDxe is now
      VirtioInputDxe; `ArmVirtQemu.dsc` sets `PcdDebugPrintErrorLevel|0` for
      VirtioSerialDxe; ArmVirtQemu may dispatch an emulated variable store
@@ -340,7 +341,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       key too; 0x13 is never acted on. Measured: output did not pause after
       a serial 0x13 on axlvmpool's 202602 X64 image, on r1, or with 0004
       (49-50 ticks in the 5 s after it on all four image sets). Making
-      serial Ctrl-S pause would need a ShellPkg change: §5.6.
+      serial Ctrl-S pause would need a ShellPkg change: §5.6, done in r3 by
+      patch 0007 (§4.28).
     - *Checked on every release*: the `ctrl-c` boot (PROPERTIES.md), RED on
       r1's four installed image sets.
 
@@ -577,21 +579,38 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     drivers), regenerated, like 0001, from copies before and after it.
     `OvmfPkgX64` has always built the same INF, so the check's GUID
     (`E2775B47-D453-4EE3-ADA7-391A1B05AC17`) moves from the X64-only list
-    to the common one (`checks.COMMON_DRIVERS`); the patch touches no
-    OvmfPkg or MdeModulePkg file, so X64 is built as in r2.
+    to the common one (`checks.COMMON_DRIVERS`). The patch touches
+    ArmVirtPkg and OvmfPkg's `PlatformBootManagerLibLight`, which only
+    ArmVirtQemu (of the platforms built) links, so X64 is built as without it.
     - *The console is unchanged.* Of the serial devices,
       `PlatformBootManagerLibLight` (ArmVirtQemu's boot manager library)
       adds only the PL011 (SerialDxe's vendor path) and virtio serial ports
       to ConIn, ConOut and ErrOut; the PCI port is a console only when a
       console variable names it. OVMF's X64 `PlatformBootManagerLib` adds a
       PCI 16550 to the console itself (`IS_PCI_16550SERIAL`), as before.
-    - *Connected only when BDS connects everything.* ArmVirtQemu's BDS
-      calls `EfiBootManagerConnectAll` only when QEMU gives no boot order
+    - *Connected by BDS, with or without a boot order* (owner, 2026-11-25,
+      for r3: amended into 0005). ArmVirtQemu's BDS calls
+      `EfiBootManagerConnectAll` only when QEMU gives no boot order
       (`ConnectDevicesFromQemu` fails); with a `bootindex` on any device it
-      connects just the boot devices, and the PCI port has no
-      EFI_SERIAL_IO until something connects it (the Shell's `connect -r`,
-      or an application's `ConnectController`). X64 connects it in either
-      case, as a console.
+      connects just the boot devices, so the first 0005 left the PCI port
+      without EFI_SERIAL_IO until something connected it (the Shell's
+      `connect -r`, or an application's `ConnectController`). The amendment
+      adds an `IsPci16550` filter (PCI class 07h, subclass 00h, interface
+      02h: `IS_PCI_16550_SERIAL`) to `PlatformBm.c` and connects each match
+      non-recursively in `PlatformBootManagerBeforeConsole`, next to the
+      virtio serial setup, as that function already connects displays,
+      virtio input and RNG devices. Non-recursive: PciSioSerialDxe makes
+      the UART child; TerminalDxe binds it only when a console variable
+      names it, so the console is unchanged. X64 connects it in either
+      case, as a console. *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0,
+      AARCH64 DEBUG under TCG `cortex-a57`, `-chardev null` plus
+      `-device pci-serial`, `tests/console-repro/repro.py`): with
+      `bootindex=0` on the boot disk, `dh -p SerialIo -v` before any connect
+      lists 2 handles, `VenHw(D3987D4B-971A-435F-8CAF-4967EB627241)/Uart(38400,8,N,1)`
+      and `PciRoot(0x0)/Pci(0x2,0x0)/Uart(38400,8,N,1)`; without a boot
+      order, the same 2. r2: 1 (the PL011's) both ways; the first 0005: 1
+      with `bootindex` (above). Guarded by the patch check (§4.28), which
+      requires `PlatformBm.c` compiled from the patched copy.
     - *Checked on every release* by the driver check (PROPERTIES.md), RED
       with the patch removed.
     - *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0; AARCH64 DEBUG under TCG
@@ -644,6 +663,136 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       the manifest's images, of the entry's own arch, whose flavour is
       `RELEASE`. Any other entry fails the release.
 
+28. **r3 console: patches 0006-0010, and the patch check** (owner,
+    2026-11-25, for r3: inventory items 2, 3, 11, 16 and 19). Each patch is
+    regenerated, like 0001, from copies before and after it, and applies
+    after 0005. Measured on AlmaLinux 10 x86_64 with QEMU 10.0.0, X64 DEBUG
+    under KVM and AARCH64 DEBUG under TCG `cortex-a57`, by
+    `tests/console-repro/repro.py` (a guest application of its own,
+    `AxlConsoleReproPkg`'s `Probe.efi`, built with the release build's
+    BaseTools, reads what the Shell cannot), on r2's installed images (RED)
+    and on this build (GREEN):
+    - *0006, the PS/2 mouse on q35* (OvmfPkg `SioBusDxe/SioService.c`).
+      SioBusDxe's table had COM1, COM2 and the keyboard (PNP0303, UID 0);
+      Ps2MouseDxe binds only PNP0F03, PNP0F13, or PNP0303 UID 1, so it never
+      bound. The patch appends PNP0F03, UID 0, on the keyboard's ports
+      (0x60, 0x64); the existing children keep their indices and paths. X64
+      only (ArmVirtQemu has no SioBusDxe nor PS/2). Measured, no USB or
+      virtio mouse, three HMP `mouse_move 10 5`: r2 has no SimplePointer
+      with a device path; r3 has
+      `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F03,0x0)` (ResolutionZ 0), whose
+      states sum to x 30, y 15. QEMU's DSDT names the mouse PNP0F13
+      (`hw/input/pckbd.c`); the inventory's PNP0F03 is kept (§5 item 9).
+      OVMF's BDS connects it only without a QEMU boot order, and QEMU sends
+      it events only while it is the active mouse (CONSUMERS.md).
+    - *0007, serial Ctrl-S* (ShellPkg `ShellProtocol.c`, `ConsoleLogger.c`;
+      §5 item 6). `NotificationFunction` sets `HaltOutput` for 0x13 (19) as
+      well as Control+'s', as its break takes 3 beside Control+'c'; the
+      pause loop in `ConsoleLoggerOutputString` pauses again on 0x13 too,
+      which matters: the 0x13 is also queued as a key, and the loop reads it
+      first, so without the second change it would resume at once. The next
+      key then resumes. *As a keyboard's Ctrl-S, also in editors* (from the
+      code, not measured; found in review): `edit` and `hexedit` save on a
+      bare 0x13 (`MenuBarDispatchControlHotKey`), and their next output then
+      pauses until a key, which the pause loop takes, as a USB keyboard's
+      Ctrl-S already did; and a terminal sending XOFF (0x13) for software
+      flow control now pauses the Shell (§5 item 10). Measured with the `ctrl-s` check's own function
+      (below): r2, 29 ticks (X64; tick 14 to 42) and 30 (AARCH64) in the 3 s
+      from 1 s after the 0x13; r3, none, then tick 4 after a space, both
+      arches.
+    - *0008, TerminalDxe's wide characters* (MdeModulePkg
+      `TerminalConOut.c`). For every terminal type but VT-UTF8,
+      `TerminalConOutOutputString` cast a non-box-drawing CHAR16 to CHAR8
+      and tested the byte: U+0141 went out as 'A', U+010D as CR. It now
+      tests the CHAR16 (`TerminalIsValidAscii` and
+      `TerminalIsValidEfiCntlChar` take one) and compares it, not the byte,
+      with ESC. Measured with each serial terminal switched to VT100
+      (`ConnectController` with a VenVt100 node, which TerminalDxe honours),
+      writing `wide<` U+0141 U+0158 `>`: r2 `wide<AX>`, r3 `wide<??>`, both
+      arches (X64's default is VT-UTF8, which never took that path; AARCH64's
+      was VT100 until §4.29).
+    - *0009, DeleteFileByName of an absent file* (ShellPkg
+      `ShellProtocol.c`). It opened through `EfiShellCreateFile`, with
+      `EFI_FILE_MODE_CREATE`: an absent file was created, deleted, and
+      `EFI_SUCCESS` returned. It now opens read/write without create
+      (`InternalOpenFileDevicePath`), so `EFI_NOT_FOUND`; a `>v` name (an
+      environment variable) still goes through `EfiShellCreateFile`.
+      Measured on a virtiofs share (virtiofsd 1.13.3) watched by inotify on
+      the host: r2 `Success (0x0)`, inotify `create absent.txt`,
+      `delete absent.txt`; r3 `Not Found (0x800000000000000E)`, no event;
+      a missing directory on the path (`newdir\absent.txt`) gave Not Found
+      and no event on both. The Shell's own callers (cp, mv, redirection)
+      ignore the status.
+    - *0010, the virtio mouse's wheel* (OvmfPkg `VirtioInputDxe`).
+      `REL_WHEEL` (0x08) adds into `RelativeMovementZ`, cleared with X and Y
+      by `GetState`; `ResolutionZ` is 8 (the driver's X and Y resolution, as
+      UsbMouseDxe's) when the device's EV_REL bitmap has REL_WHEEL, else 0.
+      Measured with `-device virtio-mouse-pci` set active (`mouse_set`),
+      HMP `mouse_move 0 0 1` twice, `0 0 -1`, `4 0`: r2 ResolutionZ 0, sums
+      x,y,z 4, 0, 0; r3 ResolutionZ 8, sums 4, 0, 1, both arches.
+    - *The `ctrl-s` boot check* (`boot.ctrl_s_pause`, every image set, a
+      serial boot of its own after `ctrl-c`): the ticks script; 0x13 after
+      `tick 3`; 1 s allowed for ticks already sent (`CTRL_S_SETTLE`); then
+      no tick for 3 s (`CTRL_S_QUIET`); a space must bring the next tick
+      within 10 s (`CTRL_S_BOUND`); then 0x03 must bring the prompt within
+      `CTRL_C_BOUND`, and `echo` must run. The same boot first types `echo
+      abX`, DEL, `c`, which must print `abc` (§4.29). Unit `CtrlSTests`
+      (stand-in Shells that ignore 0x13, never resume, end first, and read
+      DEL as Delete), each check mutated away in turn, RED. Control: r2
+      (above). Sabotage: the build without 0007 (PROPERTIES.md).
+    - *The patch check* (`checks.check_patches`, with the static checks,
+      before any boot). Every name in `checks.REQUIRED_PATCHES` (0001-0010;
+      other r3 patches add theirs) must be among the patches the build
+      applied; each file the patches touch must be, in the workspace's
+      patched copy (`ws/overlay`), the source's with the patches applied;
+      and each patched C, header or
+      assembly file must be named, as the copy, by at least one object's gcc
+      `.deps` in the four builds, and as the source's by none. So a patch
+      dropped, one that did not land, or a build that read the source's
+      file (a `PACKAGES_PATH` out of order) fails. `build.sh check`, which
+      has no workspace, requires every required name in the manifest's
+      `edk2.patches`. Unit `PatchCheckTests` and a `ReleaseCheckTests`
+      case, each branch mutated away in turn, RED. On the real workspace:
+      the overlay's `SioService.c` replaced by the source's, VirtioMouse's
+      `.deps` pointed at the source, and 0007 left out of the list, each
+      named exactly; it also caught a workspace built from an earlier text
+      of 0009 (two comment lines the patch had since changed). About 2 s.
+      *The overlay compared whole* (review, 2026-11-25): the first version
+      looked for each added line anywhere in the patched file, which a later
+      patch changing an earlier one's line would fail, and which generic
+      lines (`  }`) would pass unapplied; the check now replays the patches
+      in order onto fresh copies of the source's files (`checks.replay`, `git
+      apply`, as `build.sh`) and compares each with the overlay's, byte for
+      byte.
+29. **AARCH64's serial console is VT-UTF8** (owner, 2026-11-25, for r3:
+    inventory item 12). `ArmVirtQemu.dsc` sets `PcdDefaultTerminalType|1`
+    (VT100), and `PlatformBootManagerLibLight` puts
+    `PcdTerminalTypeGuidBuffer` (OvmfPkg's default, VT100) in the console
+    paths; X64's `PlatformBootManagerLib` names VT-UTF8 (`gVtUtf8Terminal`).
+    `build.sh` now passes, for AARCH64 only, as it passes the front-page
+    PCDs: `PcdDefaultTerminalType=3` and
+    `PcdTerminalTypeGuidBuffer=H{...}` (`EFI_VT_UTF8_GUID`,
+    AD15A0D6-8BEC-4ACF-A073-D01DE77E2D88). No patch. X64's
+    `PcdDefaultTerminalType` stays 0, as in r2 (TerminalDxe's AutoGen: X64
+    0, AARCH64 3 and the VT-UTF8 bytes in BdsDxe's, both flavours).
+    - *What changes.* VT-UTF8 reads DEL (0x7f) as Backspace
+      (`TerminalConIn.c`, upstream 58c9ba24); VT100 as Delete. Box drawing
+      and characters beyond ASCII go out as UTF-8. Virtio serial consoles,
+      which take the same GUID, and a PCI 16550 connected without a type
+      (`PcdDefaultTerminalType`) are VT-UTF8 too.
+    - *Measured* (as §4.28): `echo abX`, DEL, `c` printed `abXc` on r2's
+      AARCH64, `abc` on r3's; X64 `abc` on both. The text modes the build
+      measured (`text_modes`, all four displays, both flavours) equal r2's
+      on every image set: AARCH64 serial still `[80,25] [80,50] [100,31]
+      [128,40] [160,42] [240,56]`, current 240x56.
+    - *A vars file from r2.* An AARCH64 vars file that r2 had booted holds
+      ConOut with the VenVt100 path; r3's BDS appends the VenUtf8 one
+      (ConOut 0x3F bytes, then 0x7E), and TerminalDxe takes the type of the
+      last path connected: DEL was Backspace. The VT100 entry stays in the
+      variable.
+    - *Checked* by the `ctrl-s` boot's DEL (§4.28) on all four image sets:
+      RED on r2's AARCH64 images (`abXc`).
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact
@@ -662,7 +811,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    (remove `<prefix>/<release>` and its descriptors).
 5. **QEMU's flags reproduced rather than vendored** (decided by the builder in
    axlvmpool item 101; the owner may revisit).
-6. **Serial Ctrl-S** (raised 2026-11-25, §4.21). A serial 0x13 reaches the
+6. **Serial Ctrl-S** (raised 2026-11-25, §4.21; **decided** by the owner
+   2026-11-25: fix it in r3, patch 0007, §4.28). A serial 0x13 reaches the
    Shell with patch 0004, but the Shell pauses only for 's' with Control
    held, so serial output never pauses, as on 202602. A ShellPkg patch
    (0x13 accepted beside 's' in `NotificationFunction` and in
@@ -715,6 +865,25 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    `QEMU_DIR` at it. The job runs `./build.sh check` on the release the
    build job uploaded (no second edk2 build), and states `sysctl
    kernel.io_uring_disabled` (0) and QEMU's version, as the build job does.
+9. **The PS/2 mouse's HID: PNP0F03 or PNP0F13** (raised 2026-11-25 by the
+   builder of 0006, §4.28). The inventory and the brief named PNP0F03
+   (Microsoft PS/2-style mouse), which 0006 uses; QEMU's own DSDT gives
+   the i8042 mouse `_HID` PNP0F13 (PS/2 port for PS/2-style mice,
+   `hw/input/pckbd.c`), as the keyboard's PNP0303 matches its DSDT entry.
+   Ps2MouseDxe takes either, so the firmware works the same; the device
+   path (`Acpi(PNP0F03,0x0)` or `Acpi(PNP0F13,0x0)`) is what a consumer
+   would match, and an OS mapping a UEFI path to ACPI would expect the
+   DSDT's. *Recommendation:* PNP0F13, to match QEMU's DSDT, before r3 is
+   published (a one-character change to 0006; no consumer reads the path
+   yet).
+10. **Serial Ctrl-S in the editors, and XOFF** (raised 2026-11-25 in review
+   of 0007, §4.28). With 0007 a serial 0x13 pauses output everywhere the
+   Shell's console logger writes: in `edit` and `hexedit`, whose Save is
+   Ctrl-S, the key after a save is taken to resume output (as a keyboard's
+   Ctrl-S did already), and a terminal or terminal server sending XOFF
+   pauses the Shell until the next key. *Recommendation:* accept it, as the
+   keyboard's behaviour; skipping the pause while an editor runs would be a
+   further ShellPkg change.
 
 ## 6. Assumptions
 

@@ -1,0 +1,68 @@
+Subject: [PATCH] ShellPkg: a terminal's Ctrl-S (0x13) pauses output
+
+The Shell registers its pause as 's' and as 0x13 (19), each with left or
+right Control held, but NotificationFunction sets HaltOutput only for
+'s' with Control, and ConsoleLoggerOutputString's pause loop pauses
+again only on that key. A terminal sends Ctrl-S as 0x13 with no shift
+state (with axl-firmware's 0004-terminal-control-keys.patch it reaches
+the registrations), so serial output never paused. The break beside it
+already takes 3 (Ctrl-C) alone.
+
+Accept UnicodeChar 19 in both places. The 0x13 that set the pause is
+also queued as a key; the pause loop reads it, pauses again, and the
+next key resumes output, as with a keyboard's Ctrl-S. So a serial Ctrl-S
+now behaves as a keyboard's in edit and hexedit too (they save on it, then
+their next output pauses until a key), and a terminal that sends XOFF
+(0x13) for flow control pauses the Shell.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0006-ps2-mouse-sio.patch to a copy of the packages it touches.
+
+---
+diff --git a/ShellPkg/Application/Shell/ConsoleLogger.c b/ShellPkg/Application/Shell/ConsoleLogger.c
+index abef0a6..d3f2b3a 100644
+--- a/ShellPkg/Application/Shell/ConsoleLogger.c
++++ b/ShellPkg/Application/Shell/ConsoleLogger.c
+@@ -891,9 +891,17 @@ ConsoleLoggerOutputString (
+         break;
+       }
+ 
+-      if ((KeyData.Key.UnicodeChar == L's') && (KeyData.Key.ScanCode == SCAN_NULL) &&
+-          ((KeyData.KeyState.KeyShiftState == (EFI_SHIFT_STATE_VALID | EFI_LEFT_CONTROL_PRESSED)) ||
+-           (KeyData.KeyState.KeyShiftState == (EFI_SHIFT_STATE_VALID | EFI_RIGHT_CONTROL_PRESSED))
++      //
++      // Ctrl-S pauses again: 's' with Control held, or 0x13 (19), as a
++      // terminal sends Ctrl-S with no shift state.
++      //
++      if ((KeyData.Key.ScanCode == SCAN_NULL) &&
++          ((KeyData.Key.UnicodeChar == 19) ||
++           ((KeyData.Key.UnicodeChar == L's') &&
++            ((KeyData.KeyState.KeyShiftState == (EFI_SHIFT_STATE_VALID | EFI_LEFT_CONTROL_PRESSED)) ||
++             (KeyData.KeyState.KeyShiftState == (EFI_SHIFT_STATE_VALID | EFI_RIGHT_CONTROL_PRESSED))
++            )
++           )
+           )
+           )
+       {
+diff --git a/ShellPkg/Application/Shell/ShellProtocol.c b/ShellPkg/Application/Shell/ShellProtocol.c
+index 7c74ceb..27dbb60 100644
+--- a/ShellPkg/Application/Shell/ShellProtocol.c
++++ b/ShellPkg/Application/Shell/ShellProtocol.c
+@@ -3990,10 +3990,15 @@ NotificationFunction (
+     }
+ 
+     return (gBS->SignalEvent (ShellInfoObject.NewEfiShellProtocol->ExecutionBreak));
+-  } else if ((KeyData->Key.UnicodeChar == L's') &&
+-             ((KeyData->KeyState.KeyShiftState  == (EFI_SHIFT_STATE_VALID|EFI_LEFT_CONTROL_PRESSED)) || (KeyData->KeyState.KeyShiftState  == (EFI_SHIFT_STATE_VALID|EFI_RIGHT_CONTROL_PRESSED)))
++  } else if (((KeyData->Key.UnicodeChar == L's') &&
++              ((KeyData->KeyState.KeyShiftState  == (EFI_SHIFT_STATE_VALID|EFI_LEFT_CONTROL_PRESSED)) || (KeyData->KeyState.KeyShiftState  == (EFI_SHIFT_STATE_VALID|EFI_RIGHT_CONTROL_PRESSED)))) ||
++             (KeyData->Key.UnicodeChar == 19)
+              )
+   {
++    //
++    // Ctrl-S: 's' with Control held, or 0x13 (19), as a terminal sends it,
++    // as the break above takes 3 for Ctrl-C.
++    //
+     ShellInfoObject.HaltOutput = TRUE;
+   }
+ 

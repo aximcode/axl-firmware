@@ -6,8 +6,12 @@ passed. The boot checks are in boot.py.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import struct
+import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import NamedTuple
@@ -249,3 +253,112 @@ def source_guids(src: Path) -> list[str]:
         if got != d.guid:
             problems.append(f"{d.name}: {d.source} says {got}, the check {d.guid}")
     return problems
+
+
+# --- r3 console: each patch applied and compiled (DESIGN §4.28) -------------
+# Every patch the release carries, by file name: a build that did not apply
+# one fails (check_patches). Other r3 patches add their names here.
+REQUIRED_PATCHES = (
+    "0001-pointer-drivers.patch",
+    "0002-bochs-display-video.patch",
+    "0003-map-debug-uart.patch",
+    "0004-terminal-control-keys.patch",
+    "0005-pci-serial.patch",
+    "0006-ps2-mouse-sio.patch",
+    "0007-shell-ctrl-s.patch",
+    "0008-terminal-widechar.patch",
+    "0009-shell-delete-absent.patch",
+    "0010-virtio-mouse-wheel.patch",
+)
+# The files a compiler reads: these must be compiled from the patched copy.
+_COMPILED = (".c", ".h", ".S", ".nasm", ".asm")
+
+
+def patch_files(patch: Path) -> list[str]:
+    """The files a patch leaves (its `+++ b/` paths; a file it deletes is
+    not one), in order."""
+    files: list[str] = []
+    for raw in patch.read_bytes().decode("utf-8", errors="replace").split("\n"):
+        line = raw.removesuffix("\r")
+        if line.startswith("+++ b/"):
+            path = line[len("+++ b/") :].split("\t")[0]
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def missing_patches(applied: list[str], required: tuple[str, ...]) -> list[str]:
+    """Each required patch not among those applied (by file name), said."""
+    return [f"{name}: required, but the build did not apply it" for name in required if name not in applied]
+
+
+def replay(patches: list[Path], src: Path, out: Path) -> list[str]:
+    """The source's copy of every file the patches touch, in out, with the
+    patches applied in order by `git apply`, as build.sh applies them to
+    the overlay. Returns the problems: a patch that does not apply."""
+    for rel in {r for p in patches for r in patch_files(p)}:
+        if (src / rel).is_file():
+            (out / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src / rel, out / rel)
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(out)}
+    for patch in patches:
+        done = subprocess.run(  # noqa: S603 - our own arguments
+            ["git", "-C", str(out), "apply", "--whitespace=nowarn", str(patch)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        if done.returncode:
+            return [f"{patch.name}: does not apply to the source's files again: {done.stderr.strip()}"]
+    return []
+
+
+def check_patches(
+    patches: list[Path], required: tuple[str, ...], ws: Path, src: Path, builds: list[Path]
+) -> list[str]:
+    """Each required patch was applied; each file the patches touch is, in
+    the workspace's patched copy (ws/overlay), byte for byte the source's
+    with the patches applied in order (replayed afresh); and each patched C,
+    header or assembly file was compiled from that copy, never the source's.
+
+    builds are the build's per-arch directories (<platform>/<TARGET>_GCC/<ARCH>);
+    their objects' gcc -MMD dependency files (.deps) name every file each
+    object was compiled from. A patched file must be named by at least one
+    object, as ws/overlay/<path>, and by none as src/<path>.
+    """
+    problems = missing_patches([p.name for p in patches], required)
+    overlay = ws / "overlay"
+    with tempfile.TemporaryDirectory(prefix="axlfw-patches-") as tmp:
+        fresh = Path(tmp)
+        failed = replay(patches, src, fresh)
+        problems += failed
+        for patch in [] if failed else patches:
+            for rel in patch_files(patch):
+                copy = overlay / rel
+                if not copy.is_file():
+                    problems.append(f"{patch.name}: {copy}: no such file")
+                elif copy.read_bytes() != (fresh / rel).read_bytes():
+                    problems.append(f"{patch.name}: {copy} is not the source's {rel} with the patches applied")
+    # Each object's prerequisites, as gcc -MMD writes them (one per word,
+    # lines continued by a backslash).
+    deps = [
+        (d, set(d.read_text(errors="replace").replace("\\\n", " ").split()))
+        for b in builds
+        for d in sorted(b.rglob("*.deps"))
+    ]
+    for patch in patches:
+        for rel in patch_files(patch):
+            if not rel.endswith(_COMPILED):
+                continue
+            stale = [d for d, names in deps if (src / rel).as_posix() in names]
+            if stale:
+                problems.append(
+                    f"{patch.name}: {len(stale)} objects compiled from the unpatched {src / rel}, first {stale[0]}"
+                )
+            if not any((overlay / rel).as_posix() in names for _, names in deps):
+                problems.append(f"{patch.name}: no object compiled from the patched {overlay / rel}")
+    return problems
+
+
+# --- end of r3 console: each patch applied and compiled ----------------------

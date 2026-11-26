@@ -79,13 +79,23 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   IDs and subclass, so it is skipped too and its display may stay blank. Use
   `-device VGA`, `bochs-display`, `virtio-gpu-pci` or `ramfb` on AARCH64. X64
   is unaffected.
-- **AARCH64's PCI serial port is connected only by a full connect.** A
-  `-device pci-serial` gets an EFI_SERIAL_IO on AARCH64 from r3 (patch 0005),
-  but ArmVirtQemu's BDS connects every device only when QEMU gives no boot
-  order: with a `bootindex` on any device it connects just the boot devices,
-  so run the Shell's `connect -r`, or `ConnectController` on the port, first.
-  It is never a console unless a ConIn, ConOut or ErrOut variable names it.
-  On X64 the port is connected, and a console, either way.
+- **AARCH64's PCI serial port is never a console by itself.** A `-device
+  pci-serial` gets an EFI_SERIAL_IO on AARCH64 from r3 (patch 0005), connected
+  by BDS whether or not QEMU gives a boot order (`bootindex`), so no `connect
+  -r` is needed; but it is a console only when a ConIn, ConOut or ErrOut
+  variable names it. On X64 the port is a console from the start.
+- **The PS/2 mouse (X64, from r3) needs a full connect, and no other mouse.**
+  Patch 0006 gives QEMU's PS/2 mouse a SimplePointer at
+  `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F03,0x0)`. OVMF's BDS connects it only
+  when QEMU gives no boot order; with a `bootindex`, run `connect -r` first.
+  QEMU sends it events only while it is QEMU's active mouse (`info mice`): a
+  USB or virtio mouse added later takes them. `-machine i8042=off` removes it.
+- **The serial console's terminal type, per arch.** Both arches' serial
+  consoles are VT-UTF8 from r3 (AARCH64 was VT100): DEL (0x7f) is Backspace,
+  and box drawing and characters beyond ASCII go out as UTF-8. A vars file
+  written by r2 or earlier keeps its VT100 ConOut entry beside the new VT-UTF8
+  one; the terminal ends up VT-UTF8 all the same (measured), but start from
+  the release's `vars.fd` to drop it.
 - **No Shell fallback.** With no bootable disk, the firmware does not start the
   embedded Shell; boot your own disk, or put `Shell_<ARCH>.efi` on it.
 

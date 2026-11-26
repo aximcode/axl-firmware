@@ -2,7 +2,7 @@
 
 Prebuilt UEFI firmware for QEMU: OVMF for X64 (`q35`) and ArmVirtQemu (AAVMF)
 for AARCH64 (`virt`), built from a pinned edk2 stable tag with QEMU's own build
-flags and five small patches, checked property by property, and published as one
+flags and ten small patches, checked property by property, and published as one
 GitHub release per tag.
 
 No downloadable image has what the aximcode projects need: VirtioFsDxe and
