@@ -1416,22 +1416,35 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       lock; the token-space walk (`GetDistinctTokenSpace()`'s allocation)
       runs without it; the database build runs at entry. The patch fixes
       all four.
-    - *The patch.* `GetWorker()` and `SetWorker()` release the lock around
-      the variable call and take it again; `GetWorker()` frees the
-      variable's buffer after its final release (so a buffer a failed
-      second `GetVariable` left is freed too, where it leaked). Nothing
-      read before the release is used after it without being valid: the
-      GUID, name, `VARIABLE_HEAD` and default buffer's address point into
-      the database, which is built once and never moves, at fields no Set
-      writes; the attributes and offset are copies; the pointer-type size
-      (`GetPtrTypeSize`) and the copy into the default buffer are done
-      after the lock is taken again. What changes: a Get or Set of the same
-      PCD from a higher TPL may now run while the variable is read or
-      written (the variable services serialize themselves); the variable
-      calls run at the caller's TPL, not TPL_NOTIFY. Register allocates the
+    - *The patch.* `GetWorker()` and `SetWorker()` release
+      `mPcdDatabaseLock` around the variable call and make it under a lock
+      of its own, `mPcdHiiVariableLock` (TPL_NOTIFY; taken before
+      `mPcdDatabaseLock`, never after), so HII variable reads and writes
+      stay serialized as before: two Sets of PCDs sharing a variable cannot
+      interleave their read-modify-write, nor a Get's copy into a default
+      buffer with the defaults `SetHiiVariable()` reads for a new variable.
+      The heap guard's re-entry gets a Data PCD and takes only
+      `mPcdDatabaseLock`. `GetWorker()` takes `mPcdDatabaseLock` again for
+      the pointer-type size (`GetPtrTypeSize`) and the copy into the default
+      buffer, and frees the variable's buffer after releasing both (so a
+      buffer a failed second `GetVariable` left is freed too, where it
+      leaked). Nothing read before the release is used after it without
+      being valid: the GUID, name, `VARIABLE_HEAD` and default buffer's
+      address point into the database, which is built once and never
+      moves, at fields no Set writes; the attributes and offset are copies.
+      The variable services still run at TPL_NOTIFY. Register allocates the
       entry before the lock and frees it after if the function was already
-      registered; unregister hands the removed entry back to be freed after
-      the release. Applies after 0015; touches only PcdDxe.
+      registered (so a duplicate registration now allocates, and can fail
+      with EFI_OUT_OF_RESOURCES); unregister hands the removed entry back
+      to be freed after the release. Applies after 0015; touches only
+      PcdDxe.
+    - *Review* (independent, 2026-11-26): the first version released the
+      lock without a second one, which let a higher-TPL Set of a PCD
+      sharing the variable interleave with a lower one's read-modify-write
+      and be lost, let `SetHiiVariable()`'s defaults read race a Get's
+      copy, and moved the variable calls off TPL_NOTIFY; the HII lock above
+      closes all three. Nothing else found: no allocation left under the
+      lock, no leak or double free, lock paths balanced.
     - *RED*: the integration build (`632a056`, without 0016): X64
       GUARDED's TPM boot, no Shell within 180 s, the ASSERT above on
       debugcon. That build is also the sabotage (the tree less 0016): it
