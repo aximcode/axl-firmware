@@ -1,0 +1,51 @@
+Subject: [PATCH] NetworkPkg/DxeNetLib: no ASSERT when EFI_RNG_PROTOCOL is absent
+
+PseudoRandom (and PseudoRandomU32, through it) documents EFI_NOT_FOUND
+for "RNG protocol not found", and each of its 20 call sites at the tag,
+all in NetworkPkg, checks the status and returns it (iSCSI's CHAP
+breaks out of its exchange). Those on a driver's Start path (Ip4Dxe
+and Ip6Dxe's DriverBindingStart, Dhcp4Dxe, Dhcp6Dxe and Ip6Dxe's
+service creation, UefiPxeBcDxe's IPv6 children) then fail the start,
+and a later ConnectController starts the driver again; those in an
+entry point (Udp4Dxe, Udp6Dxe, TcpDxe) run only once the Depex below
+is met. But a DEBUG build also asserted there, and with
+PcdDebugPropertyMask's deadloop the machine stopped.
+
+The library's Depex on gEfiRngProtocolGuid holds the network drivers
+back only until they are dispatched. After that an RNG produced by a
+driver-model driver can be absent while they start: the Shell's
+`reconnect -r` disconnects every driver, VirtioRngDxe's included, and
+connects the network controllers before the virtio-rng device, so on a
+CPU with no RNG instruction (QEMU's AARCH64 cortex-a57, no FEAT_RNG;
+X64 without RDRAND), where virtio-rng is the only EFI_RNG_PROTOCOL,
+Ip4DriverBindingStart asserted at DxeNetLib.c(944). A RELEASE build
+already went on: the drivers whose start failed were started again
+later in the same `reconnect -r`, and the network worked.
+
+Drop that one ASSERT_EFI_ERROR, keeping its DEBUG_ERROR message. The
+ASSERTs on GetRNG failures stay: there an RNG exists and failed.
+RELEASE builds compile no ASSERT, so they are unchanged.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0014-aarch64-tpm-pei-map.patch to a copy of the packages it touches.
+
+---
+diff --git a/NetworkPkg/Library/DxeNetLib/DxeNetLib.c b/NetworkPkg/Library/DxeNetLib/DxeNetLib.c
+index 5c7ea0c..963fc9b 100644
+--- a/NetworkPkg/Library/DxeNetLib/DxeNetLib.c
++++ b/NetworkPkg/Library/DxeNetLib/DxeNetLib.c
+@@ -940,8 +940,13 @@ PseudoRandom (
+ 
+   Status = gBS->LocateProtocol (&gEfiRngProtocolGuid, NULL, (VOID **)&RngProtocol);
+   if (EFI_ERROR (Status)) {
++    //
++    // Not an assertion: a caller may run before any RNG producer is
++    // connected (a reconnect stops a driver-model RNG such as
++    // VirtioRngDxe with every other driver), and every caller returns the
++    // error, so a later ConnectController retries it.
++    //
+     DEBUG ((DEBUG_ERROR, "Failed to locate EFI_RNG_PROTOCOL: %r\n", Status));
+-    ASSERT_EFI_ERROR (Status);
+     return Status;
+   }
+ 

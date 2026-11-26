@@ -4,8 +4,17 @@ Each release is `<edk2 tag>-r<N>`; its section here is its release notes.
 
 ## edk2-stable202611-r3
 
-A second serial port on AARCH64, and a manifest field naming the images
-for real hardware. Everything else is as in r2.
+Ten more patches (0006-0015): console and input fixes (the PS/2 mouse,
+serial Ctrl-S, wide characters on VT100, the Shell's delete of an absent
+file, the virtio mouse's wheel), driver fixes (virtio-fs from a timer,
+`reconnect -r` with a TCP connection held or with only virtio-rng, a
+cheaper APIC EOI), an AARCH64 TPM, and a second serial port on AARCH64
+(0005). A third image set per arch, GUARDED (the heap guard, no
+descriptor); a manifest field naming the images for real hardware;
+AARCH64's serial console VT-UTF8; new boot checks (Ctrl-S, TPM, guard,
+reconnect, TCP and virtio-fs); and an installer conformance fixture.
+Text modes, the X64 GOP (1280x800), SMBIOS and the descriptors' numbering
+are as in r2.
 
 - **`0005-pci-serial.patch`**: ArmVirtQemu now builds PciSioSerialDxe,
   so an AARCH64 guest given a PCI 16550 UART (QEMU's `-device
@@ -46,7 +55,7 @@ for real hardware. Everything else is as in r2.
   release whose entry names a missing image, another arch's, or one not
   RELEASE is not packed. `default_flavour` stays `DEBUG`, and the
   manifest stays format 2: no existing field was removed or reshaped
-  (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
+  (`edk2.patches` lists every patch, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
 - **`0011-virtiofs-tpl.patch`**: VirtioFsDxe serializes its file
   protocols at TPL_CALLBACK, as FAT does. A timer or event callback that
@@ -99,6 +108,15 @@ for real hardware. Everything else is as in r2.
   build and CI now need swtpm. `measured.tpm` in the manifest records it.
   PCRs 0-7 were measured stable across warm and cold reboots of an
   unchanged guest on both arches.
+- **`0015-reconnect-rng.patch`**: the Shell's `reconnect -r` no longer
+  stops a DEBUG image with `ASSERT [Ip4Dxe] DxeNetLib.c(944)` when a NIC
+  is present and virtio-rng is the only RNG (AARCH64 under `-cpu
+  cortex-a57`, X64 without RDRAND). DxeNetLib now returns its
+  documented EFI_NOT_FOUND without asserting, and the network drivers
+  start again later in the same reconnect, as RELEASE images already
+  did; RELEASE code is unchanged. A new boot check, `reconnect`, runs
+  `reconnect -r` on all four image sets and requires a DHCP lease after
+  it (`reconnect_network` in each image's `measured`).
 - Each new tag re-checks every patch against upstream.
 
 ## edk2-stable202611-r2

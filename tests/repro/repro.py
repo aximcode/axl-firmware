@@ -147,7 +147,7 @@ def main() -> int:
     ap.add_argument("--name", default="")
     ap.add_argument("--qemu-dir", type=Path)
     ap.add_argument("--virtiofsd", type=Path, default=netfs.virtiofsd())
-    ap.add_argument("--cpu", help=f"AARCH64's CPU model (tcp: {netfs.TCP_AARCH64_CPU}, else {boot.AARCH64_CPU})")
+    ap.add_argument("--cpu", default=boot.AARCH64_CPU, help="AARCH64's CPU model")
     ap.add_argument("--no-server", action="store_true")
     ap.add_argument("--seconds", type=float, default=20.0)
     a = ap.parse_args()
@@ -175,9 +175,9 @@ def main() -> int:
             fsd = netfs.start_virtiofsd(a.virtiofsd, share, sock, out / f"{name}.virtiofsd.log")
             argv = netfs.vfs_argv(a.qemu_dir, s, vars_copy, esp, sock)
         elif mode == "tcp":
-            argv = netfs.tcp_argv(a.qemu_dir, s, vars_copy, esp, port, a.cpu or netfs.TCP_AARCH64_CPU)
+            argv = netfs.tcp_argv(a.qemu_dir, s, vars_copy, esp, port, a.cpu)
         else:
-            argv = boot.qemu_argv(a.qemu_dir, s, vars_copy, esp, a.cpu or boot.AARCH64_CPU)
+            argv = boot.qemu_argv(a.qemu_dir, s, vars_copy, esp, a.cpu)
         if arch == "x64":
             argv += ["-debugcon", f"file:{out / (name + '.debugcon')}", "-global", "isa-debugcon.iobase=0x402"]
         else:

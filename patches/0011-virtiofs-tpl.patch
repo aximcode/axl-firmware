@@ -25,7 +25,7 @@ reinstalls the protocol and connects again the drivers the uninstall
 disconnected.
 
 axl-firmware's patch against edk2-stable202611, applied after
-0005-pci-serial.patch to a copy of the packages it touches.
+0010-virtio-mouse-wheel.patch to a copy of the packages it touches.
 
 ---
 diff --git a/OvmfPkg/VirtioFsDxe/DriverBinding.c b/OvmfPkg/VirtioFsDxe/DriverBinding.c

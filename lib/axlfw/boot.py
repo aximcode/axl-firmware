@@ -1,7 +1,7 @@
 """The release's boot checks: one image set booted in QEMU, its Shell driven
 over the serial console.
 
-Per arch and flavour, six boots (and on AARCH64 one per CPU model), each
+Per arch and flavour, seven boots (and on AARCH64 one per CPU model), each
 from a FAT disk whose removable path holds the release's own Shell:
 
 - serial only: the Shell's `mode` list; a variable written (`setvar -nv`),
@@ -21,7 +21,10 @@ from a FAT disk whose removable path holds the release's own Shell:
   the character before it (VT-UTF8 on both arches); then the ticks script
   paused by a serial Ctrl-S (0x13), which must stop its ticks for
   CTRL_S_QUIET seconds, resumed by a key, then broken by a Ctrl-C (patch
-  0007).
+  0007);
+- a NIC and virtio-rng, on a CPU with no RNG instruction: `reconnect -r`,
+  which must come back with no ASSERT and the network working (patch
+  0015).
 
 X64 runs under KVM when /dev/kvm is usable, else TCG; AARCH64 under TCG.
 """
@@ -79,6 +82,31 @@ TICKS = (
     "endfor\r\n"
     "echo ticks done\r\n"
 )
+# `reconnect -r` (every driver stopped, then every controller connected)
+# with virtio-rng the only EFI_RNG_PROTOCOL: on a CPU with no RNG
+# instruction (AARCH64 cortex-a57, no FEAT_RNG; X64 without RDRAND and
+# RDSEED) the network drivers then start before VirtioRngDxe, and before
+# patch 0015 a DEBUG image asserted in DxeNetLib. The prompt must come back
+# within RECONNECT_BOUND, with no ASSERT on the debug channel, eth0 listed
+# again, and a DHCP lease from QEMU's user network (its first, NET_LEASE)
+# within DHCP_BOUND, which needs Dhcp4, Udp4, Ip4 and MNP started again.
+# A DEBUG image must also show NO_RNG_ERROR: a network driver did start
+# without an RNG, so the boot tested the window it is for.
+# Measured with patch 0015 (AlmaLinux 10 x86_64, QEMU 10.0.0): DESIGN §4.38
+# ("Patch 0015").
+RECONNECT_BOUND = 60.0
+DHCP_BOUND = 30.0
+NET_LEASE = "10.0.2.15"
+# DxeNetLib's error when a network driver starts with no EFI_RNG_PROTOCOL.
+NO_RNG_ERROR = "Failed to locate EFI_RNG_PROTOCOL"
+RECONNECT_AARCH64_CPU = "cortex-a57"
+RECONNECT_X64_CPU_FLAGS = ",-rdrand,-rdseed"
+_NET = ["-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0,romfile=", "-device", "virtio-rng-pci"]
+# DebugLib's assertion line (DebugAssert): "ASSERT [Module] File(Line): Expr"
+# on AARCH64, "ASSERT File(Line): Expr" on X64.
+_ASSERT = re.compile(r"^ASSERT (?:\[[^\]\n]+\] )?\S+\(\d+\): .*$", re.MULTILINE)
+_ETH0 = re.compile(r"^name\s+: eth0$", re.MULTILINE)
+_IPV4 = re.compile(r"^ipv4 address : (\S+)$", re.MULTILINE)
 # The longest keep_state waits on one monitor command: a wedged monitor costs
 # a boot given up on this much more, then close()'s own wait.
 STATE_TIMEOUT = 5.0
@@ -547,6 +575,83 @@ def del_backspace(g: Guest) -> None:
 
 
 # --- end of r3 console: the Ctrl-S boot check --------------------------------
+def first_assert(text: str) -> str | None:
+    """The first DebugLib assertion line in a debug log, if any."""
+    m = _ASSERT.search(text.replace("\r", ""))
+    return m.group(0) if m else None
+
+
+def _debug_text(debug_log: Path) -> str:
+    return debug_log.read_bytes().decode("latin-1") if debug_log.is_file() else ""
+
+
+def reconnect_argv(argv: list[str], arch: str, debug_log: Path) -> list[str]:
+    """argv for the reconnect boot: a CPU with no RNG instruction, the debug
+    channel to debug_log, a NIC on QEMU's user network, and virtio-rng."""
+    out = list(argv)
+    i = out.index("-cpu") + 1
+    if arch == "x64":
+        out[i] += RECONNECT_X64_CPU_FLAGS
+        debug = ["-debugcon", f"file:{debug_log}", "-global", "isa-debugcon.iobase=0x402"]
+    else:
+        out[i] = RECONNECT_AARCH64_CPU
+        debug = ["-serial", f"file:{debug_log}"]
+    return [*out, *debug, *_NET]
+
+
+def reconnect_network(
+    g: Guest, debug_log: Path, debug_flavour: bool, bound: float = RECONNECT_BOUND, dhcp_bound: float = DHCP_BOUND
+) -> float:
+    """Run `reconnect -r` with eth0 up; the seconds it took. BootError if eth0
+    is not listed before it, the prompt does not come back within bound, the
+    firmware asserted, a DEBUG image's debug channel does not show a network
+    driver started without an RNG during it (DxeNetLib's error: else it
+    tested nothing), eth0 is not listed after it, or eth0 gets no DHCP lease
+    (NET_LEASE) within dhcp_bound.
+    """
+    if not _ETH0.search(g.command("ifconfig -l")):
+        msg = f"{g.name}: `ifconfig -l` lists no eth0 before `reconnect -r`"
+        raise BootError(msg)
+    start = len(_debug_text(debug_log))
+    g.send("reconnect -r\r")
+    sent = time.monotonic()
+    try:
+        g.expect(_PROMPT, "prompt after `reconnect -r`", bound)
+    except BootError as err:
+        line = first_assert(_debug_text(debug_log)[start:])
+        if line:
+            msg = f"{g.name}: the firmware asserted in `reconnect -r`: {line}"
+            raise BootError(msg) from err
+        raise
+    took = time.monotonic() - sent
+    debug = _debug_text(debug_log)
+    line = first_assert(debug[start:])
+    if line:
+        msg = f"{g.name}: the firmware asserted in `reconnect -r`: {line}"
+        raise BootError(msg)
+    if debug_flavour and NO_RNG_ERROR not in debug[start:]:
+        msg = (
+            f"{g.name}: no {NO_RNG_ERROR!r} on the debug channel in `reconnect -r`: the network stack "
+            "never started without an RNG, so it tested nothing"
+        )
+        raise BootError(msg)
+    if not _ETH0.search(g.command("ifconfig -l")):
+        msg = f"{g.name}: `ifconfig -l` lists no eth0 after `reconnect -r`"
+        raise BootError(msg)
+    g.command("ifconfig -s eth0 dhcp")
+    deadline = time.monotonic() + dhcp_bound
+    while True:
+        m = _IPV4.search(g.command("ifconfig -l eth0"))
+        addr = m.group(1) if m else "none"
+        if addr == NET_LEASE:
+            return took
+        if time.monotonic() >= deadline:
+            msg = (
+                f"{g.name}: eth0 has no DHCP lease ({NET_LEASE}) within {dhcp_bound:.0f} s "
+                f"after `reconnect -r`: its ipv4 address is {addr}"
+            )
+            raise BootError(msg)
+        time.sleep(0.5)
 
 
 def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Result:
@@ -695,6 +800,20 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
 
         attempt("ctrl-s", [], ctrl_s)
         # --- end of r3 console ---
+        # Its own vars copy: `ifconfig -s eth0 dhcp` keeps the policy in NV.
+        net_vars = t / "net-vars.fd"
+        shutil.copyfile(s.vars, net_vars)
+        net_debug = workdir / f"{tag}-reconnect-debug.log"
+        net_debug.unlink(missing_ok=True)
+
+        result.facts["reconnect_network"] = False
+
+        def reconnect(g: Guest) -> None:
+            g.prompt()
+            reconnect_network(g, net_debug, s.flavour == "DEBUG")
+            result.facts["reconnect_network"] = True
+
+        attempt("reconnect", [], reconnect, reconnect_argv(qemu_argv(qemu_dir, s, net_vars, esp), s.arch, net_debug))
 
         if s.arch == "aarch64":
             cpus: dict[str, bool] = {}

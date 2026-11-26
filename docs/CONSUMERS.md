@@ -169,11 +169,12 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   written by r2 or earlier keeps its VT100 ConOut entry beside the new VT-UTF8
   one; the terminal ends up VT-UTF8 all the same (measured), but start from
   the release's `vars.fd` to drop it.
-- **`reconnect -r` on AARCH64 needs an RNG that is not virtio.** With
-  `-cpu cortex-a57` (no RNDR) the network stack's only RNG is
-  `virtio-rng-pci`, which `reconnect -r` stops too; Ip4Dxe then starts
-  before it and a DEBUG image ASSERTs (`DxeNetLib.c(944)`). Use `-cpu max`
-  (RNDR) on AARCH64 if a guest reconnects; X64 under KVM has RDRAND.
+- **`reconnect -r` with virtio-rng the only RNG works from r3** (patch
+  0015). With `-cpu cortex-a57` (no RNDR), or X64 without RDRAND, the network
+  stack's only RNG is `virtio-rng-pci`, which `reconnect -r` stops too; r2's
+  DEBUG images then ASSERTed in Ip4Dxe (`DxeNetLib.c(944)`). r3's print
+  DxeNetLib's error, and the network drivers start again later in the same
+  reconnect, as RELEASE images already did. On r2, use `-cpu max` (RNDR).
 - **From r3, `reconnect -r` with an accepted TCP connection returns**
   (patch 0013): the connection is destroyed with its listener, its tokens
   complete EFI_ABORTED, and the peer is not told. A resident server's

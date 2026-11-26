@@ -18,11 +18,11 @@ each arch, out of tree, never shipped):
   starts the share, which must list the file again. Without patch 0011 the
   guest hangs in VirtioFsDxe.
 
-Each runs on the DEBUG and RELEASE sets, in a boot of its own. The TCP
-boot on AARCH64 is under `-cpu max`: with `cortex-a57` (no RNDR) the
-network stack's only RNG is virtio-rng, which `reconnect -r` stops too,
-and a DEBUG image ASSERTs in Ip4Dxe (DESIGN §5 item 12), which is not
-TcpDxe's.
+Each runs on the DEBUG and RELEASE sets, in a boot of its own, on the
+boot checks' command line (AARCH64 `cortex-a57`), the TCP boot with a
+virtio-rng: under `cortex-a57` (no RNDR) it is the network stack's only
+RNG, which `reconnect -r` stops too; patch 0015 keeps a DEBUG image from
+asserting then (DESIGN §4.38).
 
 virtiofsd is AXLFW_VIRTIOFSD, else `virtiofsd` on PATH, else
 /usr/libexec/virtiofsd (Fedora's, EL's, Debian's and Ubuntu's path). With
@@ -32,7 +32,7 @@ records `"vfs_race": "skipped"`.
 
 tests/repro/repro.py runs the same functions by hand, on any image.
 
-docs/DESIGN.md §4.38.
+docs/DESIGN.md §4.39.
 """
 
 from __future__ import annotations
@@ -56,8 +56,6 @@ FLAVOURS = ("DEBUG", "RELEASE")
 # AlmaLinux 10 x86_64, QEMU 10.0.0; X64 under KVM, AARCH64 under TCG);
 # without them, never.
 BOUND = 60.0
-# AARCH64's CPU for the TCP boot (above).
-TCP_AARCH64_CPU = "max"
 TCP4_GUID = "65530BC7-A359-410F-B010-5AADC7EC2B62"
 PORT = 5555
 # The share's file: 3000 bytes VfsRace reads, and the Shell's `ls` shows.
@@ -246,7 +244,7 @@ def esp_with(s: boot.ImageSet, t: Path, files: list[Path]) -> tuple[Path, Path]:
 
 
 def tcp_argv(
-    qemu_dir: Path | None, s: boot.ImageSet, vars_copy: Path, esp: Path, port: int, cpu: str = TCP_AARCH64_CPU
+    qemu_dir: Path | None, s: boot.ImageSet, vars_copy: Path, esp: Path, port: int, cpu: str = boot.AARCH64_CPU
 ) -> list[str]:
     """The boot checks' command line with a user-mode NIC forwarding the
     host's port to the guest's 5555, and a virtio-rng (cpu: AARCH64's)."""

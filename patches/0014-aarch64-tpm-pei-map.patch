@@ -16,7 +16,7 @@ table is as before. The table grows by one entry, and the TPM is mapped
 only while an entry stays for the end.
 
 axl-firmware's patch against edk2-stable202611, applied after
-0003-map-debug-uart.patch to a copy of the packages it touches.
+0013-tcp-clone-child.patch to a copy of the packages it touches.
 
 ---
 diff --git a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
