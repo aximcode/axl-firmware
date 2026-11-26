@@ -445,6 +445,18 @@ aa64_pcds=(
     PcdDxeNxMemoryProtectionPolicy=0xC000000000007FD1
     PcdUninstallMemAttrProtocol=TRUE
 )
+# Ours, AARCH64 only: the serial console's terminal type is VT-UTF8, as
+# X64's (OVMF's PlatformBootManagerLib names VenUtf8 in its console paths),
+# where ArmVirtQemu.dsc says VT100: so DEL (0x7f) is Backspace
+# (TerminalConIn.c) and box drawing goes out as UTF-8 (DESIGN §4.29).
+# PcdTerminalTypeGuidBuffer is the type node PlatformBootManagerLibLight puts
+# in the console paths (EFI_VT_UTF8_GUID, AD15A0D6-8BEC-4ACF-A073-D01DE77E2D88);
+# PcdDefaultTerminalType (3, VT-UTF8) the type TerminalDxe takes for a port
+# connected without one, such as a PCI 16550's.
+aa64_pcds+=(
+    PcdDefaultTerminalType=3
+    "PcdTerminalTypeGuidBuffer=H{0xd6,0xa0,0x15,0xad,0xec,0x8b,0xcf,0x4a,0xa0,0x73,0xd0,0x1d,0xe7,0x7e,0x2d,0x88}"
+)
 # Ours, on both, so the front page is edk2-stable202408's, which QEMU
 # 10.0.0 bundles: the Boot Manager Menu is UiApp
 # (462CAA21-7614-4503-836E-8AB6F4662331), the front page, where edk2 now

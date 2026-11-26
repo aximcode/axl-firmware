@@ -1,0 +1,78 @@
+Subject: [PATCH] ShellPkg: DeleteFileByName opens without create
+
+EfiShellDeleteFileByName got its handle from EfiShellCreateFile, which
+opens with EFI_FILE_MODE_CREATE: given a file that does not exist, it
+created the file, then deleted it and returned EFI_SUCCESS: a watcher
+of the file system (a virtiofs share's host) saw a file created and
+deleted, and a read-only or full volume made it fail otherwise than
+with EFI_NOT_FOUND. The Shell's own callers (cp, mv, output
+redirection) ignore the status.
+
+Open the file read/write without EFI_FILE_MODE_CREATE, so an absent
+file gives EFI_NOT_FOUND and nothing is created. A name starting with
+">v" (an environment variable) is opened through EfiShellCreateFile, as
+before.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0008-terminal-widechar.patch to a copy of the packages it touches.
+
+---
+diff --git a/ShellPkg/Application/Shell/ShellProtocol.c b/ShellPkg/Application/Shell/ShellProtocol.c
+index 27dbb60..ca651a0 100644
+--- a/ShellPkg/Application/Shell/ShellProtocol.c
++++ b/ShellPkg/Application/Shell/ShellProtocol.c
+@@ -1392,6 +1392,7 @@ EfiShellOpenFileByName (
+ 
+   @retval EFI_SUCCESS             The file was closed and deleted, and the handle was closed.
+   @retval EFI_WARN_DELETE_FAILURE The handle was closed but the file was not deleted.
++  @retval EFI_NOT_FOUND           The file does not exist. Nothing was created.
+   @sa EfiShellCreateFile
+ **/
+ EFI_STATUS
+@@ -1400,19 +1401,39 @@ EfiShellDeleteFileByName (
+   IN CONST CHAR16  *FileName
+   )
+ {
+-  SHELL_FILE_HANDLE  FileHandle;
+-  EFI_STATUS         Status;
++  SHELL_FILE_HANDLE         FileHandle;
++  EFI_STATUS                Status;
++  EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
+ 
+   FileHandle = NULL;
+ 
+   //
+   // get a handle to the file
+   //
+-  Status = EfiShellCreateFile (
+-             FileName,
+-             0,
+-             &FileHandle
+-             );
++  if (StrStr (FileName, L">v") == FileName) {
++    //
++    // An environment variable, as EfiShellCreateFile opens it.
++    //
++    Status = EfiShellCreateFile (
++               FileName,
++               0,
++               &FileHandle
++               );
++  } else {
++    //
++    // A file: opened, never created. Opening it with EFI_FILE_MODE_CREATE,
++    // as EfiShellCreateFile does, made an absent file only to delete it
++    // again, and returned EFI_SUCCESS.
++    //
++    DevicePath = EfiShellGetDevicePathFromFilePath (FileName);
++    if (DevicePath == NULL) {
++      return (EFI_NOT_FOUND);
++    }
++
++    Status = InternalOpenFileDevicePath (DevicePath, &FileHandle, EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE, 0);
++    FreePool (DevicePath);
++  }
++
+   if (EFI_ERROR (Status)) {
+     return (Status);
+   }

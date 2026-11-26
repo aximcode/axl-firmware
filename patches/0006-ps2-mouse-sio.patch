@@ -1,0 +1,37 @@
+Subject: [PATCH] OvmfPkg/SioBusDxe: a PS/2 mouse child, so Ps2MouseDxe binds
+
+SioBusDxe makes the ISA children of q35's LPC bridge from a fixed table:
+COM1, COM2 and the PS/2 keyboard (PNP0303, UID 0). Ps2MouseDxe binds only
+to PNP0F03, PNP0F13, or PNP0303 with UID 1, so on q35 it never binds and
+QEMU's PS/2 mouse (the i8042's auxiliary port) has no
+EFI_SIMPLE_POINTER_PROTOCOL.
+
+Add a PNP0F03 (Microsoft PS/2-style mouse) child, UID 0, sharing the
+keyboard controller's ports 0x60 and 0x64. It goes after the existing
+entries, so their indices and device paths are unchanged. Ps2MouseDxe
+then gives PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F03,0x0) a SimplePointer.
+QEMU sends PS/2 mouse events only while no other mouse (USB, virtio) is
+its active one.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0005-pci-serial.patch to a copy of the packages it touches.
+
+---
+diff --git a/OvmfPkg/SioBusDxe/SioService.c b/OvmfPkg/SioBusDxe/SioService.c
+index 66c5a08..c03bcee 100644
+--- a/OvmfPkg/SioBusDxe/SioService.c
++++ b/OvmfPkg/SioBusDxe/SioService.c
+@@ -73,7 +73,12 @@ SIO_DEVICE_INFO  mDevicesInfo[] = {
+     EISA_PNP_ID (0x303),
+     0,
+     { (ACPI_SMALL_RESOURCE_HEADER *)&mPs2KeyboardDeviceResources }
+-  }   // PS/2 Keyboard Controller
++  },  // PS/2 Keyboard Controller
++  {
++    EISA_PNP_ID (0xF03),
++    0,
++    { (ACPI_SMALL_RESOURCE_HEADER *)&mPs2KeyboardDeviceResources }
++  }   // PS/2 Mouse, on the keyboard controller's auxiliary port
+ };
+ 
+ //
