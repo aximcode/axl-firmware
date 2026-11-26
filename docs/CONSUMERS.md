@@ -86,6 +86,19 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   so run the Shell's `connect -r`, or `ConnectController` on the port, first.
   It is never a console unless a ConIn, ConOut or ErrOut variable names it.
   On X64 the port is connected, and a console, either way.
+- **`reconnect -r` on AARCH64 needs an RNG that is not virtio.** With
+  `-cpu cortex-a57` (no RNDR) the network stack's only RNG is
+  `virtio-rng-pci`, which `reconnect -r` stops too; Ip4Dxe then starts
+  before it and a DEBUG image ASSERTs (`DxeNetLib.c(944)`). Use `-cpu max`
+  (RNDR) on AARCH64 if a guest reconnects; X64 under KVM has RDRAND.
+- **From r3, `reconnect -r` with an accepted TCP connection returns**
+  (patch 0013): the connection is destroyed with its listener, its tokens
+  complete EFI_ABORTED, and the peer is not told. A resident server's
+  workaround (a decoy binding that destroys connections in Stop) is no
+  longer needed on r3.
+- **From r3, virtio-fs file calls are serialized at TPL_CALLBACK**
+  (patch 0011), as FAT's are: file I/O from a timer or event callback is
+  safe beside the Shell's; a call above TPL_CALLBACK ASSERTs on DEBUG.
 - **No Shell fallback.** With no bootable disk, the firmware does not start the
   embedded Shell; boot your own disk, or put `Shell_<ARCH>.efi` on it.
 

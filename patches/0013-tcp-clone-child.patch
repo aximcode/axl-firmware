@@ -1,0 +1,103 @@
+Subject: [PATCH] NetworkPkg/TcpDxe: open the IP child BY_CHILD for an accepted socket
+
+TcpAttachPcb() opens each socket's own IP instance BY_CHILD_CONTROLLER
+for the socket's handle. A connection a listener accepts gets its TCB
+from TcpCloneTcb(), which shares the listener's IpInfo (a reference,
+NET_GET_REF) but never opens that IP instance for the new socket's
+handle. When the IP instance is stopped (a Shell `reconnect -r`, or a
+disconnect of the NIC, with an accepted connection alive), the DXE
+core hands TcpDxe's Stop() only the children that opened it: the
+listener. Stop() destroys the listener and returns success; the
+accepted socket's reference keeps the IpInfo, so the IP instance stays
+open BY_DRIVER, and CoreDisconnectControllersUsingProtocolInterface()
+calls Stop() again, forever, at TPL_CALLBACK.
+
+TcpCloneTcb() now opens the shared IP instance BY_CHILD_CONTROLLER for
+the clone's socket, as TcpAttachPcb() does. Stop() is then handed the
+accepted socket too and destroys it; SockDestroyChild() already closes
+Tcb->IpInfo->ChildHandle for the socket's handle (a close that, for an
+accepted socket, failed until now). If the open fails, the clone is
+destroyed and TcpCloneTcb() fails, as it does when SockClone() fails.
+
+When SockClone() fails (a listener at its backlog), TcpCloneTcb() now
+returns the IpInfo reference it took. The reference was leaked, and one
+left behind keeps the IP instance open after its listener is gone, so
+that its disconnect calls Stop() forever in the same way.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0012-localapic-eoi.patch to a copy of the packages it touches.
+
+---
+diff --git a/NetworkPkg/TcpDxe/TcpMisc.c b/NetworkPkg/TcpDxe/TcpMisc.c
+index 3310306..4e8d04f 100644
+--- a/NetworkPkg/TcpDxe/TcpMisc.c
++++ b/NetworkPkg/TcpDxe/TcpMisc.c
+@@ -535,7 +535,11 @@ TcpCloneTcb (
+   IN TCP_CB  *Tcb
+   )
+ {
+-  TCP_CB  *Clone;
++  TCP_CB      *Clone;
++  IP_IO       *IpIo;
++  EFI_GUID    *IpProtocolGuid;
++  VOID        *Ip;
++  EFI_STATUS  Status;
+ 
+   Clone = AllocateZeroPool (sizeof (TCP_CB));
+ 
+@@ -557,12 +561,55 @@ TcpCloneTcb (
+   Clone->Sk = SockClone (Tcb->Sk);
+   if (Clone->Sk == NULL) {
+     DEBUG ((DEBUG_ERROR, "TcpCloneTcb: failed to clone a sock\n"));
++    //
++    // Return the reference taken above: a reference left behind keeps the
++    // IP instance open after its listener is gone, and its disconnect then
++    // calls Stop() forever.
++    //
++    NET_PUT_REF (Tcb->IpInfo);
+     FreePool (Clone);
+     return NULL;
+   }
+ 
+   ((TCP_PROTO_DATA *)(Clone->Sk->ProtoReserved))->TcpPcb = Clone;
+ 
++  //
++  // Open the shared IP instance BY_CHILD for the clone's socket, as
++  // TcpAttachPcb() does for a socket of its own, so that when the IP
++  // instance is stopped (a NIC disconnect or reconnect), the driver's Stop()
++  // is handed this socket among the children and destroys it.
++  // SockDestroyChild() closes it. Without it, Stop() never sees the socket,
++  // its reference keeps the IP instance open BY_DRIVER, and the
++  // disconnect of that instance calls Stop() forever.
++  //
++  if (Clone->Sk->IpVersion == IP_VERSION_4) {
++    IpProtocolGuid = &gEfiIp4ProtocolGuid;
++  } else {
++    IpProtocolGuid = &gEfiIp6ProtocolGuid;
++  }
++
++  IpIo   = ((TCP_PROTO_DATA *)(Clone->Sk->ProtoReserved))->TcpService->IpIo;
++  Status = gBS->OpenProtocol (
++                  Clone->IpInfo->ChildHandle,
++                  IpProtocolGuid,
++                  &Ip,
++                  IpIo->Image,
++                  Clone->Sk->SockHandle,
++                  EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "TcpCloneTcb: failed to open the IP instance for a sock: %r\n", Status));
++    //
++    // Destroying the sock detaches the clone, which drops its reference on
++    // the IpInfo and frees it. The clone is on no TCB list yet, and has no
++    // token: destroy it as unconfigured, so that nothing removes it from a
++    // list it is not on.
++    //
++    Clone->Sk->ConfigureState = SO_UNCONFIGURED;
++    SockDestroyChild (Clone->Sk);
++    return NULL;
++  }
++
+   return Clone;
+ }
+ 

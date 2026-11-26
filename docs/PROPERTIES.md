@@ -81,3 +81,17 @@ noted.
 Unit-level sabotages (each check's code broken in turn, RED shown, restored by
 copy and checked by sha256) are covered by `tests/` and listed with each row
 above.
+
+## Patches 0011-0013: one-time proofs, not per-release checks
+
+No release check guards these patches yet (DESIGN §4.31, §5 item 9): the
+build fails if one no longer applies, and `tests/repro/repro.py` is run by
+hand. Each reproducer was shown RED without its patch and GREEN with it
+(AlmaLinux 10 x86_64, QEMU 10.0.0; DESIGN §4.28-4.30).
+
+| Patch | Reproducer | RED (without the patch) | GREEN (r3) |
+|---|---|---|---|
+| 0011 VirtioFsDxe lock | `repro.py vfs`: VfsRace reads a share file in the foreground and from a TPL_CALLBACK timer, 1000 timer rounds | r2 DEBUG X64 (two runs) and AARCH64, r2 RELEASE X64 and AARCH64: no result within 60 s; X64 frame chain VfsRace -> VirtioFsDxe -> DxeCore -> Metronome (VirtioFlush's Stall) | all four image sets: `vfsrace: PASS ... cb=1000` in 10.1-10.2 s; no ASSERT in DEBUG |
+| 0012 LocalApic EOI | `repro.py idle`: KVM exits a second, idle Shell, X64 RELEASE | the r3 build without 0012: 1361, 1331, 1338 | 912, 911, 909, 912 (halt 100, io 300 in all) |
+| 0013 TcpDxe clone | `repro.py tcp`: TcpHold holds an accepted connection, then `reconnect -r`; control `--no-server` | r2 DEBUG and RELEASE, X64 and AARCH64 (`-cpu max`), and the r3 X64 DEBUG build without 0013: no prompt within 60 s, PC samples all in DxeCore's disconnect loop; control with no server: returns in 0.6-1.1 s | all four image sets: returns in 0.4-0.7 s, both sockets gone, a new server accepts; no ASSERT in DEBUG |
+

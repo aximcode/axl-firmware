@@ -1,0 +1,23 @@
+[Defines]
+  INF_VERSION    = 1.29
+  BASE_NAME      = TcpHold
+  FILE_GUID      = 9a4f1c3e-2b7d-4e05-8c61-d3b0e7f2a948
+  MODULE_TYPE    = UEFI_DRIVER
+  ENTRY_POINT    = TcpHoldMain
+
+[Sources]
+  TcpHold.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  UefiBootServicesTableLib
+
+[Protocols]
+  gEfiTcp4ServiceBindingProtocolGuid
+  gEfiTcp4ProtocolGuid

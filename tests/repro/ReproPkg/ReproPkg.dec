@@ -1,0 +1,5 @@
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = ReproPkg
+  PACKAGE_GUID      = 3c1a7e2e-5b0f-4d39-9f5e-2f8a6f1b7c41
+  PACKAGE_VERSION   = 0.1
