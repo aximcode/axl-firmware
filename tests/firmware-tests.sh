@@ -272,13 +272,13 @@ gpu="VirtioGpuDxe (D6099B94-CD97-4CC5-8714-7F6312701A8A)"
 mice="UsbMouseDxe (2D2E62AA-9ECF-43B7-8219-94E7FC713DFE), UsbMouseAbsolutePointerDxe (4EA43463-747C-46EB-97FB-B0E5C5F05306)"
 ps2="Ps2MouseDxe (08464531-4C99-4C4C-A887-8D8BA4BBB063)"
 control() {
-    local name=$1 image=$2 digest=$3 want=$4
+    local name=$1 image=$2 digest=$3 want=$4 arch=${5:-x64}
     if [[ ! -f "$image" ]]; then
         skip controls "$name: no $image"
     elif [[ "$(sha256sum <"$image" | cut -d' ' -f1)" != "$digest" ]]; then
         skip controls "$name: $image is not the build the expected text was taken from ($digest)"
     else
-        expect "$name" 1 "" "$want" -- "$script" verify x64 "$image"
+        expect "$name" 1 "" "$want" -- "$script" verify "$arch" "$image"
     fi
 }
 d=/usr/share/edk2/ovmf
@@ -289,13 +289,21 @@ control "the distribution's Secure Boot OVMF holds SecureBootConfigDxe" "$d/OVMF
     e6a787293c6f193eaff7feeb1f929871d1b27dd72f64ce66d9326bfa0604b249 \
     "build.sh: x64: $d/OVMF_CODE.secboot.fd lacks: $fs, $gpu, $mice, Shell (7C04A583-9E3E-4F1C-AD65-E05268D0B4D1), $ps2
 build.sh: x64: $d/OVMF_CODE.secboot.fd holds: SecureBootConfigDxe (F0E6A44F-7195-41C3-AC64-54F202CD0A21)"
+d=/usr/share/edk2/aarch64
+control "the distribution's AAVMF lacks VirtioFsDxe, the pointer drivers and VirtioInputDxe" \
+    "$d/QEMU_EFI-pflash.raw" 87f2343a577625a38664ef9cbfa3153423c77826c7b7562fb8399e1a5268ef10 \
+    "build.sh: aarch64: $d/QEMU_EFI-pflash.raw lacks: $fs, $mice, QemuVideoDxe (E3752948-B9A1-4770-90C4-DF41C38986BE), PciSioSerialDxe (E2775B47-D453-4EE3-ADA7-391A1B05AC17), VirtioInputDxe (F141B1E5-9C7C-44CC-AFAA-E87D7689B113)" \
+    aarch64
 
 data=${XDG_DATA_HOME:-}
 [[ "$data" == /* ]] || data="$HOME/.local/share"
 installed=$(find "$data/axl-firmware" -mindepth 1 -maxdepth 1 -name "$tag-r*" 2>/dev/null | LC_ALL=C sort -V | tail -1 || true)
 if [[ -n "$installed" && -f "$installed/manifest.json" ]]; then
-    for dir in x64 aarch64 release/x64 release/aarch64; do
-        arch=${dir#release/}
+    # Every image set its manifest lists: the four, and from r3 guarded/*.
+    mapfile -t dirs < <("$py" -E -s -c 'import json, sys; print("\n".join(sorted(json.load(open(sys.argv[1]))["images"])))' \
+        "$installed/manifest.json")
+    for dir in "${dirs[@]}"; do
+        arch=${dir##*/}
         n=$("$py" -E -s -c 'import sys; sys.path.insert(0, sys.argv[1]); from axlfw import checks; print(len(checks.drivers(sys.argv[2])))' "$here/lib" "$arch")
         expect "the installed $dir image" 0 \
             "$arch: $installed/$dir/code.fd holds every driver checked ($n) and none of 1 absent" "" -- \

@@ -34,6 +34,7 @@ $XDG_DATA_HOME/axl-firmware/                     ($HOME/.local/share/axl-firmwar
     x64/{code.fd,vars.fd,Shell_X64.efi}          DEBUG (the default)
     aarch64/{code.fd,vars.fd,Shell_AARCH64.efi}  DEBUG
     release/x64/...  release/aarch64/...         RELEASE
+    guarded/x64/...  guarded/aarch64/...         GUARDED: DEBUG with the heap guard, no descriptor
     manifest.json  descriptors/  LICENSES/  patches/
   descriptors/                                   QEMU firmware descriptors, absolute paths
     10-axl-firmware-edk2-stable202611-r3-{x64,aarch64}.json           DEBUG
@@ -58,7 +59,7 @@ qemu-system-x86_64 -machine q35 -m 1G -nographic \
 
 | Asset | What |
 |---|---|
-| `axl-firmware-<release>.tar.xz` | both arches, DEBUG and RELEASE: code, vars template and UEFI Shell each; `manifest.json`; QEMU descriptors; the patches; licences |
+| `axl-firmware-<release>.tar.xz` | both arches, DEBUG, RELEASE and GUARDED (DEBUG with the heap guard, for finding memory corruption; selected by path, never by a descriptor): code, vars template and UEFI Shell each; `manifest.json`; QEMU descriptors; the patches; licences |
 | `axl-firmware-<release>-symbols-{x64,aarch64}.tar.xz` | the DEBUG build's `*.debug` files and FV maps, for gdb and crash decoders |
 | `SHA256SUMS` | the three tarballs' sha256 |
 

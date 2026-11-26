@@ -7,12 +7,14 @@ docs/RELEASE-FORMAT.md for the consumers' contract):
       x64/{code.fd,vars.fd,Shell_X64.efi}              DEBUG, the default
       aarch64/{code.fd,vars.fd,Shell_AARCH64.efi}      DEBUG
       release/x64/...  release/aarch64/...             RELEASE
+      guarded/x64/...  guarded/aarch64/...             GUARDED (no descriptor)
       descriptors/10-axl-firmware-<release>-<arch>.json          DEBUG
       descriptors/20-axl-firmware-<release>-release-<arch>.json  RELEASE
       manifest.json  LICENSES/  patches/
 
 Descriptors in the tarball name their images relative to that directory;
-the install makes them absolute.
+the install makes them absolute. GUARDED, DEBUG with the heap guard, has
+none, so no descriptor search can pick it (DESIGN §4.34).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, fv, install, isa, volinfo, licenses as lic_mod
+from axlfw import boot, checks, fv, guard, install, isa, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -51,7 +53,17 @@ class Image:
     @property
     def dir(self) -> str:
         """Its directory in the release."""
-        return self.arch if self.flavour == "DEBUG" else f"release/{self.arch}"
+        return self.arch if self.flavour == "DEBUG" else f"{self.flavour.lower()}/{self.arch}"
+
+    @property
+    def target(self) -> str:
+        """Its edk2 build target: GUARDED is a DEBUG build."""
+        return checks.target(self.flavour)
+
+    @property
+    def described(self) -> bool:
+        """Whether it has a QEMU firmware descriptor: GUARDED has none."""
+        return self.flavour != "GUARDED"
 
     @property
     def shell(self) -> str:
@@ -74,12 +86,20 @@ class Image:
         return "OvmfPkg/OvmfPkgX64.dsc" if self.arch == "x64" else "ArmVirtPkg/ArmVirtQemu.dsc"
 
     def build(self, ws: Path, toolchain: str) -> Path:
-        """Its edk2 build directory."""
+        """Its edk2 build directory: GUARDED's in a workspace of its own,
+        ws/guarded, since a DSC's OUTPUT_DIRECTORY cannot be set from the
+        command line (build.sh)."""
         out = "OvmfX64" if self.arch == "x64" else "ArmVirtQemu-AArch64"
-        return ws / "Build" / out / f"{self.flavour}_{toolchain}"
+        root = ws / "guarded" if self.flavour == "GUARDED" else ws
+        return root / "Build" / out / f"{self.target}_{toolchain}"
 
     def descriptor(self, release: str) -> str:
-        """Its QEMU firmware descriptor's file name: DEBUG first by name."""
+        """Its QEMU firmware descriptor's file name: DEBUG first by name.
+
+        Only for an image that has one (described)."""
+        if not self.described:
+            msg = f"{self.dir}: no descriptor"
+            raise ValueError(msg)
         return install.descriptor_name(self.dir, release)
 
     def report(self, ws: Path) -> Path:
@@ -88,6 +108,8 @@ class Image:
 
 
 IMAGES = tuple(Image(a, f) for f in checks.FLAVOURS for a in checks.ARCHES)
+# The images with a descriptor: every one but GUARDED.
+DESCRIBED = tuple(img for img in IMAGES if img.described)
 # Per arch, the image a consumer ships to real hardware: the Shell and
 # firmware deployed onto physical machines, where a DEBUG build's ASSERT can
 # halt the box. Each must be its arch's RELEASE image (check_hardware_images;
@@ -361,16 +383,20 @@ def _setting(name: str, default: str, kind: type[int] | type[float], what: str) 
 
 
 def boot_checks(
-    root: Path, tag: str, qemu_dir: Path | None, logs: Path
+    root: Path, tag: str, qemu_dir: Path | None, logs: Path, overrun: dict[str, Path] | None = None
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """Every image set's boot checks, AXLFW_BOOT_JOBS (default 2) at a time.
 
-    A bad setting, or a QEMU not found, is a problem before any boot.
+    overrun, per arch, the guard check's application (guard.app): with it,
+    each DEBUG and GUARDED set also runs guard.check (the build has it;
+    `build.sh check`, on a packed release, does not). A bad setting, a QEMU
+    not found, or an application missing is a problem before any boot.
     """
     jobs = _setting("AXLFW_BOOT_JOBS", "2", int, "whole number")
     timeout = _setting("AXLFW_BOOT_TIMEOUT", "180", float, "number of seconds")
     problems = [x for x in (jobs, timeout) if isinstance(x, str)]
     problems += boot.missing_qemu(qemu_dir, checks.ARCHES)
+    problems += [f"{p}: no {guard.APP} for the guard check" for p in (overrun or {}).values() if not p.is_file()]
     if problems:
         return {}, problems
     assert not isinstance(jobs, str) and not isinstance(timeout, str)  # noqa: S101 - refused above
@@ -379,7 +405,12 @@ def boot_checks(
     def one(img: Image) -> boot.Result:
         d = root / img.dir
         s = boot.ImageSet(img.arch, img.flavour, d / "code.fd", d / "vars.fd", d / img.shell, tag)
-        return boot.run(s, qemu_dir, logs, timeout)
+        r = boot.run(s, qemu_dir, logs, timeout)
+        if overrun is not None and img.flavour in guard.FLAVOURS:
+            g = guard.check(s, overrun[img.arch], qemu_dir, logs, timeout)
+            r.facts.update(g.facts)
+            r.problems += g.problems
+        return r
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=int(jobs)) as pool:
         results = list(pool.map(one, IMAGES))
@@ -452,7 +483,8 @@ def assemble(a: AssembleArgs) -> int:
             f" {c['without_code']} without compiled code)",
             flush=True,
         )
-    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs")
+    overrun = {arch: guard.app(a.ws, a.toolchain, arch) for arch in checks.ARCHES}
+    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs", overrun)
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         if measured:
@@ -473,16 +505,17 @@ def assemble(a: AssembleArgs) -> int:
         return 1
     print("+ licence lists derived from the build reports and checked", flush=True)
     (stage / "descriptors").mkdir()
-    for img in IMAGES:
+    for img in DESCRIBED:
         _json(stage / "descriptors" / img.descriptor(rel), descriptor(img, rel, a.tag, a.commit, ""))
     images: dict[str, object] = {}
     for img in IMAGES:
         d = img.dir
         dbg = debug[d]
-        if img.flavour == "DEBUG":
+        if img.target == "DEBUG":
             dbg["output"] = (
                 "debugcon I/O port 0x402" if img.arch == "x64" else "the second PL011 UART, when QEMU has one"
             )
+        if img.flavour == "DEBUG":
             dbg["descriptor_feature"] = "verbose-dynamic" if img.arch == "x64" else "verbose-static"
         m = measured[d]
         images[d] = {
@@ -495,9 +528,10 @@ def assemble(a: AssembleArgs) -> int:
                 f"PcdFirmwareVersionString=L{a.tag}\\0",
                 f"PcdFirmwareReleaseDateString=L{a.release_date}\\0",
                 *a.pcds[img.arch].split(),
+                *(a.pcds.get("guarded", "").split() if img.flavour == "GUARDED" else []),
             ],
             **{key: file_entry(stage, rel_path) for key, rel_path in img.files.items()},
-            "descriptor": f"descriptors/{img.descriptor(rel)}",
+            "descriptor": f"descriptors/{img.descriptor(rel)}" if img.described else None,
             "debug": dbg,
             "secure_boot": False,
             "verified": verified[d],
@@ -544,7 +578,7 @@ def assemble(a: AssembleArgs) -> int:
         "default_flavour": "DEBUG",
         "hardware_images": dict(HARDWARE_IMAGES),
         "images": images,
-        "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in IMAGES],
+        "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in DESCRIBED],
         "symbols": symbols,
         "licenses": lic,
     }
@@ -667,14 +701,17 @@ def check(release_dir: Path, qemu_dir: Path | None, logs: Path) -> int:
                 problems.append(f"{path}: not the manifest's {key} (size or sha256)")
         if entry.get("flavour") != img.flavour or entry.get("arch") != img.arch:
             problems.append(f"{img.dir}: the manifest says {entry.get('arch')} {entry.get('flavour')}")
-        name = release_dir / "descriptors" / img.descriptor(rel)
-        try:
-            got = json.loads(name.read_text())
-        except (OSError, ValueError) as err:
-            problems.append(f"{name}: {err}")
-        else:
-            if got != descriptor(img, rel, tag, commit, ""):
-                problems.append(f"{name}: not the descriptor of {img.dir}")
+        if img.described:
+            name = release_dir / "descriptors" / img.descriptor(rel)
+            try:
+                got = json.loads(name.read_text())
+            except (OSError, ValueError) as err:
+                problems.append(f"{name}: {err}")
+            else:
+                if got != descriptor(img, rel, tag, commit, ""):
+                    problems.append(f"{name}: not the descriptor of {img.dir}")
+        elif entry.get("descriptor") is not None:
+            problems.append(f"{img.dir}: the manifest names a descriptor, {entry.get('descriptor')!r}; it has none")
         problems += lic_mod.check_image_licenses(img.dir, entry.get("licenses"), top, release_dir, None)
         problems += checks.check_image(img.arch, release_dir / img.dir / "code.fd")
         problems += checks.check_shell(img.arch, release_dir / img.dir / img.shell)

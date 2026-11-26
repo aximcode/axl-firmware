@@ -5,8 +5,9 @@
 # release. See README.md and docs/DESIGN.md.
 #
 #   build.sh build [--edk2 DIR] [--install] [--prefix DIR]
-#       Build both arches in both flavours (DEBUG, RELEASE), check every
-#       property (static and booted), and pack dist/: the release tarball,
+#       Build both arches in each flavour (DEBUG, RELEASE, and GUARDED:
+#       DEBUG with the heap guard), check every property (static and
+#       booted), and pack dist/: the release tarball,
 #       a symbols tarball per arch, SHA256SUMS. --install then installs
 #       that tarball, as `install` does.
 #   build.sh install --from <tarball|release-tag> [--prefix DIR] [--sha256 HEX] [--symbols]
@@ -474,6 +475,12 @@ common_pcds=(
 # GCC5"); GCC is its successor.
 toolchain=GCC
 flavours=(DEBUG RELEASE)
+# The guarded image (DESIGN §4.34): the DEBUG build with the UEFI page and
+# pool guards, the pool against its tail guard page, for EfiLoaderCode,
+# EfiLoaderData, EfiBootServicesCode and EfiBootServicesData; never the
+# freed-memory guard (BIT4), which excludes them. lib/axlfw/checks.py's
+# HEAP_GUARD holds the values its AutoGen must show.
+guard_pcds=(PcdHeapGuardPropertyMask=0x03 PcdHeapGuardPoolType=0x1E PcdHeapGuardPageType=0x1E)
 # The X64 code's instruction set: baseline x86-64 (DESIGN §4.24).
 x64_march=-march=x86-64
 # The firmware's version (SMBIOS type 0's BIOS version) is the tag, and its
@@ -547,10 +554,11 @@ done
             "(found: $(command -v build || echo none))"
     pin_x64_march "$CONF_PATH/tools_def.txt" "$x64_march" "${flavours[@]}"
     echo "+ X64 C compiled for baseline x86-64: $x64_march on the X64 CC_FLAGS of $CONF_PATH/tools_def.txt"
-    # edk2_build <target> <dsc> <arch> <opts...> -- <pcds...>
+    # edk2_build <name> <target> <dsc> <arch> <opts...> -- <pcds...>: name
+    # (DEBUG, RELEASE, GUARDED) names its log and build report.
     edk2_build() {
-        local target=$1 dsc=$2 arch=$3 a
-        shift 3
+        local name=$1 target=$2 dsc=$3 arch=$4 a
+        shift 4
         local -a cmd=(build -t "$toolchain" -b "$target" -p "$dsc" -a "$arch" -n "$jobs"
             --pcd "PcdFirmwareVersionString=L$tag\\0"
             --pcd "PcdFirmwareReleaseDateString=L$release_date\\0")
@@ -567,17 +575,41 @@ done
         # image's licence list is derived (lib/axlfw/licenses.py). It is
         # written after the images and does not change their bytes
         # (DESIGN §4.22).
-        cmd+=(-y "$ws/report-$arch-$target.txt" -Y LIBRARY -Y FLASH)
+        cmd+=(-y "$ws/report-$arch-$name.txt" -Y LIBRARY -Y FLASH)
         echo "+ ${cmd[*]}"
-        nice -n 19 "${cmd[@]}" >"$ws/build-$arch-$target.log" 2>&1 || {
-            tail -40 "$ws/build-$arch-$target.log" >&2
-            die "the $arch $target build failed (log: $ws/build-$arch-$target.log)"
+        nice -n 19 "${cmd[@]}" >"$ws/build-$arch-$name.log" 2>&1 || {
+            tail -40 "$ws/build-$arch-$name.log" >&2
+            die "the $arch $name build failed (log: $ws/build-$arch-$name.log)"
         }
     }
     for target in "${flavours[@]}"; do
-        edk2_build "$target" OvmfPkg/OvmfPkgX64.dsc X64 "${common_opts[@]}" -- "${common_pcds[@]}"
-        edk2_build "$target" ArmVirtPkg/ArmVirtQemu.dsc AARCH64 "${common_opts[@]}" "${aa64_opts[@]}" \
+        edk2_build "$target" "$target" OvmfPkg/OvmfPkgX64.dsc X64 "${common_opts[@]}" -- "${common_pcds[@]}"
+        edk2_build "$target" "$target" ArmVirtPkg/ArmVirtQemu.dsc AARCH64 "${common_opts[@]}" "${aa64_opts[@]}" \
             -- "${common_pcds[@]}" "${aa64_pcds[@]}"
+    done
+    # GUARDED in a workspace of its own, ws/guarded, with a copy of the
+    # pinned Conf: its Build/ is apart from DEBUG's, since a DSC's
+    # OUTPUT_DIRECTORY cannot be set from the command line.
+    mkdir -p "$ws/guarded"
+    cp -R "$CONF_PATH" "$ws/guarded/Conf"
+    (
+        export WORKSPACE="$ws/guarded" CONF_PATH="$ws/guarded/Conf"
+        edk2_build GUARDED DEBUG OvmfPkg/OvmfPkgX64.dsc X64 "${common_opts[@]}" -- "${common_pcds[@]}" \
+            "${guard_pcds[@]}"
+        edk2_build GUARDED DEBUG ArmVirtPkg/ArmVirtQemu.dsc AARCH64 "${common_opts[@]}" "${aa64_opts[@]}" \
+            -- "${common_pcds[@]}" "${aa64_pcds[@]}" "${guard_pcds[@]}"
+    )
+    # The guard check's application (tests/guard-overrun/, lib/axlfw/guard.py),
+    # for each arch: a package of this repository's, read only, after the
+    # source on PACKAGES_PATH.
+    for arch in X64 AARCH64; do
+        cmd=(build -t "$toolchain" -b DEBUG -p AxlFwGuardPkg/AxlFwGuardPkg.dsc -a "$arch" -n "$jobs")
+        echo "+ ${cmd[*]} (PACKAGES_PATH adds $here/tests/guard-overrun)"
+        PACKAGES_PATH="$PACKAGES_PATH:$here/tests/guard-overrun" nice -n 19 "${cmd[@]}" \
+            >"$ws/build-$arch-overrun.log" 2>&1 || {
+            tail -40 "$ws/build-$arch-overrun.log" >&2
+            die "the $arch guard-check application build failed (log: $ws/build-$arch-overrun.log)"
+        }
     done
 )
 
@@ -606,6 +638,7 @@ args=(assemble --ws "$ws" --src "$src" --dist "$here/dist" --stage "$work/stage"
     --compiler "x64=gcc $x64_cc" --compiler "aarch64=$aa64_gcc $aa64_cc"
     --defines "x64=${common_opts[*]}" --defines "aarch64=${common_opts[*]} ${aa64_opts[*]}"
     --pcds "x64=${common_pcds[*]}" --pcds "aarch64=${common_pcds[*]} ${aa64_pcds[*]}"
+    --pcds "guarded=${guard_pcds[*]}"
     --repo-commit "$repo_commit" --repo-dirty "$repo_dirty"
     --built-by "$built_by")
 for p in "${patches[@]}"; do

@@ -747,7 +747,7 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       patched copy (`ws/overlay`), the source's with the patches applied;
       and each patched C, header or
       assembly file must be named, as the copy, by at least one object's gcc
-      `.deps` in the four builds, and as the source's by none. So a patch
+      `.deps` in the builds (GUARDED's two too), and as the source's by none. So a patch
       dropped, one that did not land, or a build that read the source's
       file (a `PACKAGES_PATH` out of order) fails. `build.sh check`, which
       has no workspace, requires every required name in the manifest's
@@ -909,6 +909,190 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     one-time boots above are the proof; a patch that no longer applies
     fails the build.
 
+34. **The guarded image, GUARDED** (owner, 2026-11-25, for r3; built by
+    the release builder). A third image per arch, `guarded/x64` and
+    `guarded/aarch64`: the DEBUG build with edk2's UEFI heap guard, so a
+    write past a pool buffer or page allocation faults at the write instead
+    of corrupting memory silently. SoftBMC asked for it: a DXE pool
+    corruption passes every QEMU run and halts only on real hardware.
+    - *The PCDs.* `PcdHeapGuardPropertyMask=0x03` (the UEFI page guard,
+      BIT0, and pool guard, BIT1; BIT7 clear: a pool buffer sits against its
+      tail guard page, which is what catches an overrun),
+      `PcdHeapGuardPoolType=0x1E` and `PcdHeapGuardPageType=0x1E` (EfiLoaderCode,
+      EfiLoaderData, EfiBootServicesCode, EfiBootServicesData). The pool and
+      page guards, not the freed-memory guard (BIT4): edk2 cannot enable
+      both (MdeModulePkg.dec, note c), and the reported failure is an
+      overrun; a use-after-free image would be a fourth flavour. Not BIT6
+      (non-stop), which logs and goes on. Not the runtime types:
+      AARCH64's runtime granularity is 64 KiB, and `CoreAllocatePoolI`
+      drops the guard for any granularity but a page, so they would be
+      guarded on one arch only; on X64 they would also scatter guard holes
+      through the runtime map an OS inherits. The types are what UEFI
+      drivers and applications allocate by default
+      (UefiMemoryAllocationLib's EfiBootServicesData) and what the Shell
+      loads images as.
+    - *All FixedAtBuild* (MdeModulePkg.dec:1143, 1179, 1207), so it is a
+      build of its own: `build.sh` builds it in a workspace of its own,
+      `work/ws/guarded`, with a copy of the pinned Conf, since a DSC's
+      `OUTPUT_DIRECTORY` cannot be set from the command line and DEBUG's
+      `Build/` must stay DEBUG's. The PCDs change three modules (DxeCore,
+      DxeIpl, and on X64 CpuDxe); every other module is DEBUG's.
+    - *No descriptor, so never auto-picked.* Both consumers' searches take
+      the lowest-named qualifying descriptor (axl-sdk's
+      `axl-firmware-select.py`, axlvmpool's `descriptors::candidates` and
+      `discover::choose`), so a `30-` descriptor would never win while
+      DEBUG's qualifies. But each falls through: axlvmpool takes the next
+      candidate when one fails its driver check or is known bad (its
+      catalog), axl-sdk's `--fallback` the first after a failed read, and a
+      third reader (libvirt, a later consumer) may rank otherwise. With no
+      descriptor the guarded image is never a candidate, whatever happens
+      to DEBUG's and RELEASE's; and install.py's descriptor clean-up
+      (`[12]0-axl-firmware-*`) is unchanged. A consumer selects it by path:
+      the manifest's `images["guarded/<arch>"]`, `OVMF_CODE`/`OVMF_VARS`
+      (`AAVMF_*`), or axlvmpool's `config.toml` `firmware.X64 = {code,
+      vars}` (CONSUMERS.md). The manifest says `"descriptor": null`.
+    - *Additive.* The manifest stays format 2: two more `images` entries,
+      `flavour` `GUARDED`, `debug.heap_guard`, `measured.pool_overrun`;
+      `hardware_images` still names RELEASE only (checked). install.py
+      from r3 requires the four sets and checks every other set the
+      manifest lists (`<name>/<arch>`), so a later image set needs no
+      installer change; **r2's install.py refuses r3** ("its manifest's
+      images are [...], not [...]"): an old checkout must be updated to
+      install r3. No other installer exists yet (axlvmpool's is slice C1,
+      axl-sdk's planned).
+    - *No symbols tarball:* DEBUG's serve every module but the three above.
+    - *Sabotage:* the guarded build without its PCDs is the DEBUG build
+      (the same command line less the three), so each check was run on
+      DEBUG's images and build as GUARDED: the static check says
+      `<DxeMain>: the guarded image's PcdHeapGuardPropertyMask 0x00, not
+      0x03; PcdHeapGuardPoolType 0x00, not 0x1e; PcdHeapGuardPageType
+      0x00, not 0x1e` on both arches, and the boot check `Overrun.efi did
+      not fault on a write one byte past a pool buffer; fault was
+      expected` on both; and GUARDED's build checked as DEBUG, `a DEBUG
+      build with the heap guard (PcdHeapGuardPropertyMask 0x03)`. With the
+      PCDs, `measured.pool_overrun` is `fault` on both GUARDED sets and
+      `silent` on both DEBUG sets (local build, AlmaLinux 10 x86_64).
+    - *Checked.* Statically, before any boot (`checks.heap_guard`, from
+      DxeMain's AutoGen): GUARDED's three PCDs exactly; every other image's
+      `PcdHeapGuardPropertyMask` 0. Booted, by `guard.check` on each DEBUG
+      and GUARDED set: `tests/guard-overrun/`'s `Overrun.efi` (built by
+      `build.sh` out of tree, against the pinned MdePkg) allocates 64 bytes
+      of EfiBootServicesData and writes byte 64; GUARDED must fault (X64:
+      `#PF`, `W:1 P:0`, the image at RIP `Overrun.dll`; AARCH64: a
+      synchronous exception whose first frame is `Overrun.dll`), DEBUG must
+      print its second line and give the prompt back. The DEBUG run is the
+      control: the write is made, and only the guard catches it. Not re-run
+      by `build.sh check`, which has no workspace and so no application.
+    - *Measured* against DEBUG side by side (AlmaLinux 10 x86_64, QEMU 10.0.0;
+      X64 under KVM `-cpu host`, AARCH64 under TCG `cortex-a57`, `-m 1024`,
+      `-smp 2`; five boots each, DEBUG and GUARDED interleaved; **under
+      load**, the host's 1-minute load 9.2 to 11.1 throughout from another
+      project's tests, so the times are relative). Time from QEMU's start
+      to the Shell's prompt, median (range): X64 DEBUG 4.50 s (3.76-4.64),
+      GUARDED 4.99 s (4.21-6.06), +0.5 s; AARCH64 DEBUG 3.87 s (3.74-4.13),
+      GUARDED 5.01 s (4.76-5.24), +1.1 s. Memory, the Shell's `memmap`
+      at its prompt: X64 Available 248656 pages DEBUG, 237403 GUARDED
+      (11253 pages, 44 MiB, more in use: guard pages and the page each
+      guarded pool allocation takes); AARCH64 252109 and 245195 (6914
+      pages, 27 MiB). Both boot to the Shell at `-m 256` and `-m 128` (one
+      boot each): at 128 MiB X64 GUARDED has 8029 pages (31 MiB) free,
+      DEBUG 19280; AARCH64 15823 and 22734. A consumer whose guest is
+      tight on memory gives the guarded one more. In the release's own
+      boot checks (2 at a time, same host and load) a GUARDED set's boots
+      took 55 s, a DEBUG set's 38 s.
+    - *CI's cost.* Locally (same host, load about 10, `JOBS=4`) the two
+      guarded builds took 2:30 (X64) and 2:34 (AARCH64), as long as DEBUG's
+      (2:38, 2:15), and the two guard-check applications seconds; the whole
+      `build.sh build` 26:46. On CI's runner each edk2 build takes 2:15 to
+      2:27 (run 45757564955), so the guarded builds add about 5 minutes;
+      the boots about 1 minute more (two more image sets and four
+      guard-check boots, two at a time), the `build.sh check` step's
+      re-boots about 35 s, and packing (xz -9) about 30 s. About 7 minutes
+      on run 45757564955's 15:40 build job, an estimate until the first CI
+      run of r3 measures it. The release tarball grows from 8.1 MB (r2) to
+      12.5 MB.
+
+35. **The installer conformance fixture** (owner, 2026-11-25, axlvmpool
+    DESIGN §11 item 105, D7; built by the release builder).
+    `tests/conformance/`: `make-fixture.py` (standard library, Python 3.9,
+    deterministic: members dated 2000-01-01, 0:0, 0644/0755, sorted; xz
+    preset 6, CRC64; `--check` regenerates in memory and names any file
+    that differs) writes `cases/<name>/` (a tarball and its SHA256SUMS) and
+    `expected.json` (format 1). The miniature release, `edk2-stable200001-r1`,
+    has r3's layout and a manifest with every field, stand-in images of a
+    few dozen bytes, and the four real descriptors (`install.descriptor`).
+    Cases: three good (six sets; pinned, no SHA256SUMS; r2's four sets),
+    one locked (must wait), one with hostile modes and owners (installed,
+    normalised), and 39 hostile, each with an `outcome`, a
+    `stage` (digest, members, manifest, descriptors), a stable `reason`
+    and install.py's exact message: the tarball's digest (SHA256SUMS
+    wrong, pin wrong, SHA256SUMS without the asset, none, a bad asset
+    name), the archive (truncated xz, an uncompressed tar), members (`..`,
+    `..` under the top, absolute, outside the top, another release's top,
+    symlinks and hard links inside and escaping, character and block
+    devices, a FIFO, a PAX `path` climbing out, a duplicate, a member over
+    128 MiB, members over 1 GiB in all, more than 4096 members), the
+    manifest (format 1 and 3, the release, a missing set, an escaping set
+    name, one with a newline, a reserved one, a moved image, a wrong
+    digest, a guarded image's size, a missing file) and the descriptors
+    (outside, absolute, retargeted, unlisted). `tests/test_conformance.py`
+    installs each into a prefix holding an earlier install, another
+    release's descriptor and a file of the user's: installed (files by
+    sha256, descriptors exactly), refused (InstallError, the message, the
+    prefix byte for byte as it was) or waits (with `.lock` held, nothing
+    changes; then installed).
+    - *install.py failed five cases, real bugs, fixed:* (1) a truncated xz
+      raised `EOFError`, which neither install.py nor `__main__` catches:
+      a traceback; (2) an uncompressed tar raised `tarfile.ReadError`,
+      reported without the file; both are now "`<tarball>`: not a complete
+      xz-compressed tar: ..."; (3) a duplicate member was extracted twice,
+      the last copy winning, and refused only when that copy failed its
+      digest (a duplicate of the manifest's bytes passed; one whose first
+      copy differed was installed from the second): now refused by name;
+      (4) a member of any size was written (a decompression bomb fills the
+      disk): now refused over `MAX_MEMBER` (128 MiB, twice AARCH64's 64 MiB
+      bank); (5) so was any total: now refused over `MAX_TOTAL` (1 GiB, r3
+      unpacks to about 420 MiB). Members are checked as each header is
+      read, before anything is written, so a bomb is refused without
+      decompressing it.
+    - *Found by the review, fixed* (each with a fixture case, RED before
+      and with its check mutated away): the tarball's modes and owners
+      were kept where Python lacks the "data" filter (before 3.12 and the
+      backports), so a setuid or world-writable `code.fd` could be
+      installed (`hostile-modes`: every member now 0644 or 0755, the
+      user's); no cap on the member count (`too-many-members`, 4096); an
+      image set name with a trailing newline passed the shape check
+      (`set-newline`, `fullmatch`); and a set named `symbols/<arch>`,
+      which `--symbols` writes (`set-reserved`; `descriptors`, `symbols`,
+      `patches` and `LICENSES` are reserved).
+    - *Each check shown to matter:* with it mutated away the fixture goes
+      RED on its cases (member type: the links, devices and FIFO; `..`: the
+      two climbs inside the top; duplicates, each cap, the archive errors,
+      the descriptor path check: their cases). `_inside` alone goes RED on
+      none: every path it guards is first held to its exact expected
+      string, and links are refused as members, so it is defence in depth.
+    - *Vendoring:* copy the directory; assert `outcome`, and `reason` (an
+      installer that words its own messages) or `message` (`{tarball}`,
+      `{tarball_dir}` and `{unpacked}` placeholders, as
+      `test_conformance.pattern` fills them).
+
+36. **Checks and docs for input and RNG** (owner, 2026-11-25, for r3).
+    VirtioInputDxe (`F141B1E5-9C7C-44CC-AFAA-E87D7689B113`) and RamDiskDxe
+    (`28A03FF4-12B3-4305-A417-BB1A4F94081E`) join `checks.COMMON_DRIVERS`:
+    both are in every r1 and r2 image, X64 included (OvmfPkgX64.fdf:217 and
+    :240; ArmVirtQemuFvMain.fdf.inc:121 and :228), so RamDiskDxe is common,
+    not AARCH64's. Control: AlmaLinux 10's AAVMF (`QEMU_EFI-pflash.raw`)
+    lacks VirtioInputDxe (`tests/firmware-tests.sh`). CONSUMERS.md: an
+    absolute pointer is `-device virtio-tablet-pci` (measured on r2, both
+    arches: `dh -p AbsolutePointer` lists `PciRoot(0x0)/Pci(0x2,0x0)`;
+    `usb-tablet` gives none); networking needs an RNG on both arches
+    (measured on r2 under TCG: no `eth0` under `-cpu qemu64` or
+    `cortex-a57` alone; `eth0` with `+rdrand`, `-cpu max`, KVM `-cpu
+    host`, or `-device virtio-rng-pci`). No document here said the
+    absolute pointer cannot be used in QEMU; patch 0001's message ("a USB
+    mouse or tablet") implies usb-tablet works, which it does not, and is
+    left as it is (§4.7; the release builder touches no patch).
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact
@@ -1017,6 +1201,20 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     (RDRAND). *Recommendation:* a CONSUMERS note now; a fix (connect RNG
     drivers first, or NetLib not asserting) only if a consumer needs
     reconnect on AARCH64 without RNDR.
+13. **AARCH64 with a TPM faults in PEI** (found 2026-11-25 measuring PCRs
+    for SoftBMC; not fixed in r3 by this builder). r2 AARCH64 DEBUG with
+    swtpm (`-chardev socket,... -tpmdev emulator,... -device
+    tpm-tis-device,tpmdev=tpm0`) stops after its banner: `Synchronous
+    Exception at 0x4A700`, X20 = `0x0c000000`, the virt machine's platform
+    bus, where QEMU places `tpm-tis-device`. This r3 build (release
+    builder's, AlmaLinux 10 x86_64) does the same (`Synchronous Exception
+    at 0x49748`). Same cause as patch 0003's
+    UART: since 158c1b614 PEI maps only the console UART and fw_cfg, and
+    the TPM's MMIO is touched before it is mapped. X64 with `tpm-tis` is
+    unaffected. *Recommendation:* map the TPM's page in
+    `QemuVirtMemInfoLib` as 0003 maps the PL011s (a patch, and a TPM boot
+    check per arch), when a consumer needs a TPM on AARCH64; SoftBMC asked
+    about PCRs.
 
 ## 6. Assumptions
 
@@ -1053,6 +1251,18 @@ Verified:
   failure fails the pipeline, and where SIGPIPE is ignored it also writes to
   stderr. Reproduced locally by ignoring SIGPIPE and feeding tr its input in
   two parts, so that awk has exited before the second.
+- *PCRs 0-7 of an unchanged X64 guest are stable across reboots with
+  swtpm* (SoftBMC's question, 2026-11-25). r2 X64 DEBUG (r3 not yet built;
+  KVM, QEMU 10.0.0, `swtpm socket --tpm2` on one state directory, `-device
+  tpm-tis`), read from the Shell by a scratch application (Tcg2's
+  `SubmitCommand`, `TPM2_PCR_Read`, both banks): one boot on a fresh vars
+  copy, two warm `reset`s in it, three more cold boots on the same vars
+  and TPM state. Every PCR 0-7 of SHA-256 and SHA-1 was the same in all
+  six. SHA-256: PCR0 `2ACEE488…5404A`, PCR1 `436D805C…745EA`, PCR4
+  `FE0D4678…7BA1D`, PCR7 `B5710BF5…81439`; PCR2, 3, 5, 6 the separator
+  alone (`3D458CFE…E7969`). Control: r2's RELEASE image changes PCR0 (the
+  firmware) and PCR4 (its Shell, the boot application) and nothing else.
+  AARCH64 could not be measured: §5 item 13.
 
 To verify:
 

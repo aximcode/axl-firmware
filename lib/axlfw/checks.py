@@ -64,6 +64,11 @@ COMMON_DRIVERS = (
         "E2775B47-D453-4EE3-ADA7-391A1B05AC17",
         "MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf",
     ),
+    # virtio-input: virtio-keyboard, virtio-mouse and virtio-tablet-pci, the
+    # tablet an EFI_ABSOLUTE_POINTER (QEMU's usb-tablet gives none).
+    Driver("VirtioInputDxe", "F141B1E5-9C7C-44CC-AFAA-E87D7689B113", "OvmfPkg/VirtioInputDxe/VirtioInput.inf"),
+    # RAM disks (EFI_RAM_DISK_PROTOCOL), on both arches.
+    Driver("RamDiskDxe", "28A03FF4-12B3-4305-A417-BB1A4F94081E", "MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf"),
 )
 # X64 only: SnpDxe, which ArmVirtQemu does not build (its NICs are
 # virtio-net, whose VirtioNetDxe produces SNP itself; SnpDxe serves UNDI
@@ -82,7 +87,21 @@ ABSENT = (
     ),
 )
 ARCHES = ("x64", "aarch64")
-FLAVOURS = ("DEBUG", "RELEASE")
+# GUARDED is the DEBUG build with the UEFI heap guard (HEAP_GUARD): a third
+# image per arch, never a descriptor's (DESIGN §4.34).
+FLAVOURS = ("DEBUG", "RELEASE", "GUARDED")
+# The guarded image's heap-guard PCDs (MdeModulePkg.dec), FixedAtBuild, as
+# its DxeMain's AutoGen must hold them: the UEFI page and pool guards (BIT0,
+# BIT1), the pool placed against its tail guard (BIT7 clear), so a write
+# past a buffer whose size is a multiple of 8 faults at once; not the
+# freed-memory guard (BIT4), which the page and pool guards exclude; not
+# non-stop mode (BIT6). Pool and page types: EfiLoaderCode, EfiLoaderData,
+# EfiBootServicesCode and EfiBootServicesData (0x1E), what UEFI drivers and
+# applications allocate; the runtime types are left out, since AARCH64's
+# 64 KiB runtime granularity cannot guard them and the guard would
+# fragment the runtime map an OS inherits on X64. Every other image's
+# PcdHeapGuardPropertyMask is 0.
+HEAP_GUARD = {"PcdHeapGuardPropertyMask": 0x03, "PcdHeapGuardPoolType": 0x1E, "PcdHeapGuardPageType": 0x1E}
 UIAPP = "462CAA21-7614-4503-836E-8AB6F4662331"
 # PE machine types.
 _MACHINE = {"x64": 0x8664, "aarch64": 0xAA64}
@@ -177,12 +196,43 @@ def _guid_bytes(guid: str) -> str:
     return ",".join(f"0x{b:02x}" for b in uuid.UUID(guid).bytes_le)
 
 
-def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object], list[str]]:
-    """What a build's AutoGen says of its debug flavour and front page.
+def target(flavour: str) -> str:
+    """The edk2 build target of a flavour: GUARDED is a DEBUG build."""
+    return "DEBUG" if flavour == "GUARDED" else flavour
 
-    build is the platform's <TARGET>_<TOOLCHAIN> directory. Returns the
-    facts for the manifest and the problems found.
+
+def _pcd_int(value: str) -> int | None:
+    """A PCD's integer value as AutoGen spells it (0x1EULL, 3U), or None."""
+    try:
+        return int(value.rstrip("UuLl"), 0)
+    except ValueError:
+        return None
+
+
+def heap_guard(pcds: dict[str, str], dxe: Path, flavour: str) -> tuple[dict[str, str], list[str]]:
+    """DxeMain's heap-guard PCDs, as hex, and the problems: GUARDED's must be
+    HEAP_GUARD exactly; every other image's property mask 0."""
+    values = {name: _pcd_int(pcds.get(name, "")) for name in HEAP_GUARD}
+    missing = [name for name, v in values.items() if v is None]
+    if missing:
+        return {}, [f"{dxe}: no AutoGen value for {', '.join(missing)}"]
+    facts = {name: f"{v:#04x}" for name, v in values.items() if v is not None}
+    if flavour == "GUARDED":
+        wrong = [f"{name} {facts[name]}, not {want:#04x}" for name, want in HEAP_GUARD.items() if values[name] != want]
+        return facts, [f"{dxe}: the guarded image's " + "; ".join(wrong)] if wrong else []
+    if values["PcdHeapGuardPropertyMask"]:
+        mask = facts["PcdHeapGuardPropertyMask"]
+        return facts, [f"{dxe}: a {flavour} build with the heap guard (PcdHeapGuardPropertyMask {mask})"]
+    return facts, []
+
+
+def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object], list[str]]:
+    """What a build's AutoGen says of its debug flavour, heap guard and front page.
+
+    build is the platform's <TARGET>_<TOOLCHAIN> directory; GUARDED's target
+    is DEBUG. Returns the facts for the manifest and the problems found.
     """
+    flavour_name, flavour = flavour, target(flavour)
     problems: list[str] = []
     dxe = _module_dir(build, arch, "MdeModulePkg/Core/Dxe/DxeMain")
     bds = _module_dir(build, arch, "MdeModulePkg/Universal/BdsDxe/BdsDxe")
@@ -206,6 +256,14 @@ def build_facts(build: Path, arch: str, flavour: str) -> tuple[dict[str, object]
         "print_error_level": None if level is None else f"{level:#010x}",
         "boot_manager_menu": "UiApp" if menu == _guid_bytes(UIAPP) else menu,
     }
+    guard, more = heap_guard(pcds, dxe, flavour_name)
+    problems += more
+    if flavour_name == "GUARDED":
+        facts["heap_guard"] = {
+            "property_mask": guard.get("PcdHeapGuardPropertyMask"),
+            "pool_type": guard.get("PcdHeapGuardPoolType"),
+            "page_type": guard.get("PcdHeapGuardPageType"),
+        }
     if menu != _guid_bytes(UIAPP):
         problems.append(f"{bds}: PcdBootManagerMenuFile is {menu or 'unset'}, not UiApp's {UIAPP}")
     if not build.name.startswith(f"{flavour}_"):

@@ -25,9 +25,10 @@ one selection rule serves every source of firmware:
 
 A release's descriptors are `10-axl-firmware-<release>-<arch>.json` (DEBUG) and
 `20-axl-firmware-<release>-release-<arch>.json` (RELEASE), so the rule picks
-DEBUG. To boot RELEASE, name its descriptor or its files. The firmware's own
-directory, holding `Shell_<ARCH>.efi` beside `code.fd`, is the directory of the
-descriptor's `executable`.
+DEBUG. To boot RELEASE, name its descriptor or its files. The guarded image
+(GUARDED, from r3) has no descriptor, so no search ever picks it: name its
+files (below). The firmware's own directory, holding `Shell_<ARCH>.efi` beside
+`code.fd`, is the directory of the descriptor's `executable`.
 
 ## Each consumer
 
@@ -35,9 +36,81 @@ descriptor's `executable`.
 |---|---|
 | axlvmpool | Its discovery searches the descriptors as above (the neutral path first), checks the drivers, and records the choice. `axlvmpool firmware --arch <X64\|AARCH64> [--json]` prints `code`, `vars` and how they were chosen: **the resolver for every other consumer when axlvmpool is installed.** `axlvmpool setup` will download a release. |
 | axl-sdk | `find_firmware` asks `axlvmpool firmware` when axlvmpool is installed, else applies the same descriptor rule itself. `axl firmware install` fetches a release by tag and pinned sha256 through its own toolchain installer, so SDK users need not have axlvmpool. The DEBUG X64 image is the debug OVMF its `find_debug_ovmf` needs (DESIGN §5, item 1), and the symbols tarballs serve `gdb-syms.py` and rsod-decode. |
-| SoftBMC | The installed release's `Shell_<ARCH>.efi` and images, through the descriptors or `axlvmpool firmware`; for physical machines, the images `hardware_images` names (RELEASE, from r3). |
+| SoftBMC | The installed release's `Shell_<ARCH>.efi` and images, through the descriptors or `axlvmpool firmware`; for physical machines, the images `hardware_images` names (RELEASE, from r3); to find a pool overrun in QEMU before it reaches hardware, the guarded image, by path (below). |
 | AGT | The DEBUG images (quiet AARCH64, X64 at 1280x800) through the descriptors. |
 | A downstream diagnostics project | A release fetched by tag and pinned sha256, typically RELEASE, with `bochs-display` on AARCH64 and the SMBIOS BIOS version reading the edk2 tag. |
+
+## The guarded image: finding memory corruption in QEMU
+
+From r3 each release ships `guarded/x64` and `guarded/aarch64`: the DEBUG
+build with edk2's UEFI page and pool guards (RELEASE-FORMAT.md, "The guarded
+image"). A driver or application that writes past a pool buffer (of
+EfiLoaderCode, EfiLoaderData, EfiBootServicesCode or EfiBootServicesData) or a
+page allocation faults at that instruction, with the CPU exception's dump on
+the serial console: X64 `!!!! X64 Exception Type - 0E(#PF - Page-Fault)`
+with `W:1 P:0` and the image found at the faulting RIP, AARCH64
+`Synchronous Exception at 0x...` and a backtrace naming the image. On DEBUG
+and RELEASE the same write passes silently. It is slower and uses more memory
+than DEBUG (DESIGN.md §4.34 gives both, measured), so it is for a run that
+hunts a corruption, not the default.
+
+It has no QEMU descriptor, so it is never picked by QEMU's, libvirt's,
+axlvmpool's or axl-sdk's descriptor search; select it explicitly, one of:
+
+- **By the manifest:** the image set `guarded/<arch>` in the release's
+  `manifest.json` (`images["guarded/x64"]`, `flavour` `GUARDED`); its `code`,
+  `vars` and `shell` paths are relative to the release directory, with their
+  sizes and sha256.
+- **By path**, under an installed release (`$XDG_DATA_HOME/axl-firmware/<release>/`,
+  by default `$HOME/.local/share/axl-firmware/<release>/`):
+  `guarded/x64/code.fd` and `guarded/x64/vars.fd` (X64), `guarded/aarch64/code.fd`
+  and `guarded/aarch64/vars.fd` (AARCH64), its Shell beside them. For QEMU, a
+  copy of `vars.fd` per guest:
+  `-drive if=pflash,format=raw,unit=0,readonly=on,file=<release>/guarded/x64/code.fd
+  -drive if=pflash,format=raw,unit=1,file=<a copy of guarded/x64/vars.fd>`.
+  axl-sdk's and axlvmpool's settings take the same paths: `OVMF_CODE` and
+  `OVMF_VARS` (X64), `AAVMF_CODE` and `AAVMF_VARS` (AARCH64).
+- **axlvmpool's `config.toml`** (`$XDG_CONFIG_HOME/axlvmpool/config.toml`),
+  a pin below those variables and above discovery:
+
+  ```toml
+  format = 1
+
+  [firmware]
+  # <data> is $XDG_DATA_HOME (by default $HOME/.local/share), written out:
+  # the file takes absolute paths and expands no variable.
+  X64 = { code = "<data>/axl-firmware/edk2-stable202611-r3/guarded/x64/code.fd", vars = "<data>/axl-firmware/edk2-stable202611-r3/guarded/x64/vars.fd" }
+  AARCH64 = "auto"
+  ```
+
+  or `axlvmpool config set firmware.X64 <code> <vars>`. The pool takes the
+  Shell from the pinned code's directory (`guarded/x64/Shell_X64.efi`).
+
+What it catches, and what it does not (a write *into* the 8-byte alignment
+slack of a buffer, a write before a buffer, use-after-free, the runtime
+memory types), is in RELEASE-FORMAT.md. Never ship it to hardware:
+`hardware_images` names RELEASE only.
+
+## Input and networking under QEMU
+
+- **An absolute pointer: `-device virtio-tablet-pci`.** VirtioInputDxe
+  (checked in every image from r3) gives it an EFI_ABSOLUTE_POINTER_PROTOCOL,
+  with a SimplePointer, at its PCI path (on r2 X64 and AARCH64: `dh -p
+  AbsolutePointer` lists `PciRoot(0x0)/Pci(0x2,0x0)`). QEMU's `usb-tablet`
+  gets none: UsbMouseAbsolutePointerDxe does not bind it (measured on r2,
+  `-device qemu-xhci -device usb-tablet`: only ConSplitter's own handle).
+  `virtio-mouse-pci` and `usb-mouse` (with `qemu-xhci`) give a relative
+  pointer, a SimplePointer at the device's path (measured on r2 X64).
+- **X64 networking needs an RNG.** edk2's network stack (DxeNetLib) depends
+  on EFI_RNG_PROTOCOL, which X64 gets from RDRAND or from a `virtio-rng-pci`
+  device. Under KVM with `-cpu host`, or a TCG model with RDRAND (`-cpu max`,
+  `-cpu qemu64,+rdrand`), or with `-device virtio-rng-pci`, a `virtio-net-pci`
+  NIC is `eth0` in `ifconfig -l`; under `-cpu qemu64` without either, the whole
+  stack (MNP, IP, TCP, DHCP, TFTP, HTTP) is "discovered but not loaded" and
+  `ifconfig -l` lists nothing (measured on r2 X64, TCG). AARCH64 likewise:
+  under `-cpu cortex-a57` (the boot checks' and axlvmpool's default) the NIC
+  is `eth0` only with `-device virtio-rng-pci`; under `-cpu max` (which has
+  RNDR) it is `eth0` without one (measured on r2 AARCH64, TCG).
 
 ## Fetching with a pinned sha256
 

@@ -1,0 +1,22 @@
+## @file
+# Writes one byte past the end of a 64-byte pool buffer (Overrun.c).
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = Overrun
+  FILE_GUID      = 9c3e5a71-2b8d-4f06-a1c4-7e2d9b0f5a18
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = UefiMain
+
+[Sources]
+  Overrun.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib

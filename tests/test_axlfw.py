@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, install, isa, licenses, release, volinfo  # noqa: E402
+from axlfw import boot, checks, fv, guard, install, isa, licenses, release, volinfo  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -84,10 +84,25 @@ class DriverListTests(unittest.TestCase):
             "VirtioFsDxe", "VirtioGpuDxe", "VirtioRngDxe", "VirtioNetDxe", "VirtioBlkDxe", "VirtioScsiDxe",
             "VirtioSerialDxe", "Ip6Dxe", "HttpDxe", "TlsDxe", "IScsiDxe", "MnpDxe", "Ip4Dxe", "TcpDxe",
             "Dhcp4Dxe", "Tcg2Dxe", "UsbMouseDxe", "UsbMouseAbsolutePointerDxe", "QemuVideoDxe", "UiApp",
-            "Shell", "PciSioSerialDxe",
+            "Shell", "PciSioSerialDxe", "VirtioInputDxe", "RamDiskDxe",
         ]  # fmt: skip
         self.assertEqual([d.name for d in checks.drivers("aarch64")], common)
         self.assertEqual([d.name for d in checks.drivers("x64")], [*common, "SnpDxe", "Ps2MouseDxe"])
+
+    def test_input_and_ram_disk_on_both_arches(self) -> None:
+        # virtio-tablet-pci's absolute pointer (and virtio-keyboard's and
+        # virtio-mouse's input) is VirtioInputDxe's, built on both since
+        # 202608; RamDiskDxe is built on both (OvmfPkgX64.fdf, and
+        # ArmVirtQemuFvMain.fdf.inc), by one INF each.
+        want = [
+            checks.Driver("VirtioInputDxe", "F141B1E5-9C7C-44CC-AFAA-E87D7689B113", "OvmfPkg/VirtioInputDxe/VirtioInput.inf"),
+            checks.Driver(
+                "RamDiskDxe", "28A03FF4-12B3-4305-A417-BB1A4F94081E", "MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf"
+            ),
+        ]
+        for arch in checks.ARCHES:
+            with self.subTest(arch):
+                self.assertEqual([d for d in checks.drivers(arch) if d.name in ("VirtioInputDxe", "RamDiskDxe")], want)
 
     def test_pci_serial_on_both_arches(self) -> None:
         # Patch 0005 adds it to ArmVirtQemu; OvmfPkgX64 always had it, by
@@ -284,6 +299,8 @@ class PatchCheckTests(unittest.TestCase):
                 Path(f"{build}/ArmVirtQemu-AArch64/DEBUG_GCC/AARCH64"),
                 Path(f"{build}/OvmfX64/RELEASE_GCC/X64"),
                 Path(f"{build}/ArmVirtQemu-AArch64/RELEASE_GCC/AARCH64"),
+                Path("/nonexistent/ws/guarded/Build/OvmfX64/DEBUG_GCC/X64"),
+                Path("/nonexistent/ws/guarded/Build/ArmVirtQemu-AArch64/DEBUG_GCC/AARCH64"),
             ],
         )
 
@@ -335,7 +352,20 @@ UIAPP_BYTES = "0x21,0xaa,0x2c,0x46,0x14,0x76,0x03,0x45,0x83,0x6e,0x8a,0xb6,0xf4,
 MENU_APP_BYTES = "0xbf,0x3e,0x7d,0xee,0x8a,0xc6,0xf6,0x4a,0x96,0xef,0x43,0xa4,0x3f,0x37,0x40,0x9b"
 
 
-def _build(root: Path, flavour: str, arch: str, mask: str, level: str, menu: str, ndebug: bool) -> Path:
+NO_GUARD = ("0x0", "0x0ULL", "0x0ULL")
+GUARD = ("0x03", "0x000000000000001EULL", "0x1EULL")
+
+
+def _build(
+    root: Path,
+    flavour: str,
+    arch: str,
+    mask: str,
+    level: str,
+    menu: str,
+    ndebug: bool,
+    guard: tuple[str, ...] | None = NO_GUARD,
+) -> Path:
     b = root / f"{flavour}_GCC"
     a = "X64" if arch == "x64" else "AARCH64"
     dxe = b / a / "MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
@@ -345,6 +375,12 @@ def _build(root: Path, flavour: str, arch: str, mask: str, level: str, menu: str
     (dxe / "AutoGen.c").write_text(
         f"#define _PCD_VALUE_PcdDebugPrintErrorLevel  {level}U\n#define _PCD_VALUE_PcdDebugPropertyMask  {mask}U\n"
     )
+    if guard is not None:
+        # As AutoGen.h spells them: a UINT8 with U, the UINT64s with ULL.
+        names = ("PcdHeapGuardPropertyMask", "PcdHeapGuardPoolType", "PcdHeapGuardPageType")
+        (dxe / "AutoGen.h").write_text(
+            "".join(f"#define _PCD_VALUE_{n}  {v}{'U' if n.endswith('Mask') else ''}\n" for n, v in zip(names, guard))
+        )
     (dxe.parent / "GNUmakefile").write_text("CC_FLAGS = -Os" + (" -DMDEPKG_NDEBUG\n" if ndebug else "\n"))
     (bds / "AutoGen.h").write_text(
         f"GLOBAL_REMOVE_IF_UNREFERENCED const UINT8 _gPcd_FixedAtBuild_PcdBootManagerMenuFile[16] = {{{menu}}};\n"
@@ -437,6 +473,84 @@ class BuildFactsTests(unittest.TestCase):
                 ({}, [f"{debug / 'AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG'}: no AutoGen with the debug PCDs"]),
             )
 
+    def test_guarded_x64_qualifies(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(Path(t), "DEBUG", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=False, guard=GUARD)
+            self.assertEqual(
+                checks.build_facts(b, "x64", "GUARDED"),
+                (
+                    {
+                        "target": "DEBUG",
+                        "asserts_compiled": True,
+                        "property_mask": "0x2f",
+                        "print_error_level": "0x8000004f",
+                        "boot_manager_menu": "UiApp",
+                        "heap_guard": {"property_mask": "0x03", "pool_type": "0x1e", "page_type": "0x1e"},
+                        "assert": "deadloop",
+                        "clear_memory": True,
+                    },
+                    [],
+                ),
+            )
+
+    def test_heap_guard_values(self) -> None:
+        self.assertEqual(
+            checks.HEAP_GUARD,
+            {"PcdHeapGuardPropertyMask": 0x03, "PcdHeapGuardPoolType": 0x1E, "PcdHeapGuardPageType": 0x1E},
+        )
+
+    def test_guarded_without_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(Path(t), "DEBUG", "aarch64", "0x2F", "0x80000000", UIAPP_BYTES, ndebug=False)
+            dxe = b / "AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
+            self.assertEqual(
+                checks.build_facts(b, "aarch64", "GUARDED")[1],
+                [
+                    f"{dxe}: the guarded image's PcdHeapGuardPropertyMask 0x00, not 0x03;"
+                    " PcdHeapGuardPoolType 0x00, not 0x1e; PcdHeapGuardPageType 0x00, not 0x1e"
+                ],
+            )
+
+    def test_guarded_with_the_freed_memory_guard(self) -> None:
+        # BIT4 alone: the use-after-free guard, which excludes the pool guard.
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(
+                Path(t), "DEBUG", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=False, guard=("0x10", "0x1E", "0x1E")
+            )
+            dxe = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
+            self.assertEqual(
+                checks.build_facts(b, "x64", "GUARDED")[1],
+                [f"{dxe}: the guarded image's PcdHeapGuardPropertyMask 0x10, not 0x03"],
+            )
+
+    def test_guarded_is_a_debug_build(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(Path(t), "RELEASE", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=True, guard=GUARD)
+            mk = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/GNUmakefile"
+            self.assertEqual(
+                checks.build_facts(b, "x64", "GUARDED")[1],
+                [f"{b}: not a DEBUG build", f"{mk}: a DEBUG build with MDEPKG_NDEBUG"],
+            )
+
+    def test_heap_guard_only_on_guarded(self) -> None:
+        for flavour, ndebug in (("DEBUG", False), ("RELEASE", True)):
+            with self.subTest(flavour), tempfile.TemporaryDirectory() as t:
+                b = _build(Path(t), flavour, "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=ndebug, guard=GUARD)
+                dxe = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
+                self.assertEqual(
+                    checks.build_facts(b, "x64", flavour)[1],
+                    [f"{dxe}: a {flavour} build with the heap guard (PcdHeapGuardPropertyMask 0x03)"],
+                )
+
+    def test_no_heap_guard_pcds(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            b = _build(Path(t), "DEBUG", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=False, guard=None)
+            dxe = b / "X64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG"
+            self.assertEqual(
+                checks.build_facts(b, "x64", "DEBUG")[1],
+                [f"{dxe}: no AutoGen value for PcdHeapGuardPropertyMask, PcdHeapGuardPoolType, PcdHeapGuardPageType"],
+            )
+
     def test_flavour_swapped(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             b = _build(Path(t), "RELEASE", "x64", "0x2F", "0x8000004F", UIAPP_BYTES, ndebug=True)
@@ -455,9 +569,43 @@ class DescriptorTests(unittest.TestCase):
         want = json.loads((FIXTURES / "descriptors.json").read_text())
         got = {
             img.descriptor(rel): release.descriptor(img, rel, tag, commit, "/p/edk2-stable202611-r1/")
-            for img in release.IMAGES
+            for img in release.DESCRIBED
         }
         self.assertEqual(got, want)
+
+    def test_guarded_has_none(self) -> None:
+        self.assertEqual(
+            [(img.dir, img.flavour, img.described) for img in release.IMAGES],
+            [
+                ("x64", "DEBUG", True),
+                ("aarch64", "DEBUG", True),
+                ("release/x64", "RELEASE", True),
+                ("release/aarch64", "RELEASE", True),
+                ("guarded/x64", "GUARDED", False),
+                ("guarded/aarch64", "GUARDED", False),
+            ],
+        )
+        self.assertEqual([img.dir for img in release.DESCRIBED], list(install.IMAGE_DIRS))
+        with self.assertRaises(ValueError) as cm:
+            release.Image("x64", "GUARDED").descriptor("edk2-stable202611-r3")
+        self.assertEqual(str(cm.exception), "guarded/x64: no descriptor")
+
+    def test_guarded_builds_apart(self) -> None:
+        ws = Path("/w")
+        self.assertEqual(
+            [str(release.Image(a, f).build(ws, "GCC")) for f in checks.FLAVOURS for a in checks.ARCHES],
+            [
+                "/w/Build/OvmfX64/DEBUG_GCC",
+                "/w/Build/ArmVirtQemu-AArch64/DEBUG_GCC",
+                "/w/Build/OvmfX64/RELEASE_GCC",
+                "/w/Build/ArmVirtQemu-AArch64/RELEASE_GCC",
+                "/w/guarded/Build/OvmfX64/DEBUG_GCC",
+                "/w/guarded/Build/ArmVirtQemu-AArch64/DEBUG_GCC",
+            ],
+        )
+        self.assertEqual(release.Image("aarch64", "GUARDED").report(ws), Path("/w/report-AARCH64-GUARDED.txt"))
+        self.assertEqual(release.Image("x64", "GUARDED").files, {
+            "code": "guarded/x64/code.fd", "vars": "guarded/x64/vars.fd", "shell": "guarded/x64/Shell_X64.efi"})
 
 
 class BootParseTests(unittest.TestCase):
@@ -863,6 +1011,120 @@ class CtrlSTests(unittest.TestCase):
 
 
 # --- end of r3 console: the Ctrl-S boot check --------------------------------
+
+
+# A stand-in Shell for guard.outcome: on `fs0:\Overrun.efi` it prints the
+# application's first line, then, by mode, X64's or AARCH64's exception dump
+# for a fault in Overrun.dll (as the guarded images print them, cut), the
+# second line and a prompt, or nothing more; "missing" answers as the Shell
+# does for a file that is not there.
+_FAKE_OVERRUN = r"""
+import os, sys
+mode = sys.argv[1]
+def out(s):
+    os.write(1, s.encode())
+X64 = (
+    "!!!! X64 Exception Type - 0E(#PF - Page-Fault)  CPU Apic ID - 00000000 !!!!\r\n"
+    "ExceptionData - 0000000000000002  I:0 R:0 U:0 W:1 P:0 PK:0 SS:0 SGX:0\r\n"
+    "RIP  - 000000003AF16E46, CS  - 0000000000000038, RFLAGS - 0000000000010206\r\n"
+    "!!!! Find image based on IP(0x3AF16E46) /w/Build/AxlFwGuard/DEBUG_GCC/X64/AxlFwGuardPkg/Overrun/Overrun/"
+    "DEBUG/Overrun.dll (ImageBase=000000003AF15000, EntryPoint=000000003AF16DCA) !!!!\r\n"
+)
+AARCH64 = (
+    "\r\n\r\nSynchronous Exception at 0x0000000043DC2F18\r\n"
+    "PC 0x000043DC2F18 (0x000043DC1000+0x00001F18) [ 0] Overrun.dll\r\n"
+)
+out("Shell> ")
+line = b""
+while (c := os.read(0, 1)):
+    if c != b"\r":
+        out(c.decode())
+        line += c
+        continue
+    out("\r\n")
+    if line == b"fs0:\\Overrun.efi" and mode == "missing":
+        out("'fs0:\\Overrun.efi' is not recognized as an internal or external command.\r\nShell> ")
+    elif line == b"fs0:\\Overrun.efi":
+        out("axlfw-overrun: writing byte 64 of a 64-byte pool buffer\r\n")
+        if mode == "x64":
+            out(X64)
+        elif mode == "aarch64":
+            out(AARCH64)
+        elif mode == "wrong-image":
+            out(X64.replace("Overrun.dll", "DxeCore.dll"))
+        elif mode == "silent":
+            out("axlfw-overrun: written, no fault\r\nShell> ")
+    line = b""
+"""
+
+
+class GuardTests(unittest.TestCase):
+    """The guarded image's boot check: Overrun.efi faults, or does not."""
+
+    def guest(self, t: str, mode: str) -> boot.Guest:
+        g = boot.Guest([sys.executable, "-c", _FAKE_OVERRUN, mode], Path(t), Path(t), "fake", 2)
+        self.addCleanup(g.close)
+        g.prompt()
+        return g
+
+    def test_outcomes(self) -> None:
+        for mode, arch, want in (("x64", "x64", "fault"), ("aarch64", "aarch64", "fault"), ("silent", "x64", "silent"),
+                                 ("silent", "aarch64", "silent")):
+            with self.subTest(mode=mode, arch=arch), tempfile.TemporaryDirectory() as t:
+                self.assertEqual(guard.outcome(self.guest(t, mode), arch, 1), want)
+
+    def test_no_outcome(self) -> None:
+        # Each arch's dump is not the other's; a fault placed in another
+        # image is not the application's; nothing after the first line.
+        for mode, arch in (("x64", "aarch64"), ("aarch64", "x64"), ("wrong-image", "x64"), ("hangs", "x64")):
+            with self.subTest(mode=mode, arch=arch), tempfile.TemporaryDirectory() as t:
+                with self.assertRaises(boot.BootError) as cm:
+                    guard.outcome(self.guest(t, mode), arch, 1)
+                self.assertEqual(
+                    str(cm.exception).split("\n")[0],
+                    "fake: no Overrun.efi's fault or second line within 1 s; console ends:",
+                )
+
+    def test_not_started(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            with self.assertRaises(boot.BootError) as cm:
+                guard.outcome(self.guest(t, "missing"), "x64", 1)
+            self.assertEqual(
+                str(cm.exception).split("\n")[0], "fake: no Overrun.efi's first line within 2 s; console ends:"
+            )
+
+    def test_expected(self) -> None:
+        cases: tuple[tuple[str, str, list[str]], ...] = (("GUARDED", "fault", []), ("GUARDED", "silent", [
+            "x64 GUARDED: Overrun.efi did not fault on a write one byte past a pool buffer; fault was expected"]),
+            ("DEBUG", "silent", []), ("DEBUG", "fault", [
+                "x64 DEBUG: Overrun.efi faulted on a write one byte past a pool buffer; silent was expected"]))
+        for flavour, got, problems in cases:
+            with self.subTest(flavour=flavour, got=got), tempfile.TemporaryDirectory() as t:
+                d = Path(t)
+                for name in ("code.fd", "vars.fd", "Shell_X64.efi", "Overrun.efi"):
+                    (d / name).write_bytes(b"x")
+                s = boot.ImageSet("x64", flavour, d / "code.fd", d / "vars.fd", d / "Shell_X64.efi", "tag")
+                fake = mock.MagicMock(spec=boot.Guest)
+                with mock.patch.object(boot, "Guest", return_value=fake), \
+                        mock.patch.object(guard, "outcome", return_value=got):
+                    r = guard.check(s, d / "Overrun.efi", None, d / "logs", 5)
+                self.assertEqual((r.facts, r.problems), ({"pool_overrun": got}, problems))
+                fake.close.assert_called_once_with()
+
+    def test_app_path(self) -> None:
+        self.assertEqual(
+            guard.app(Path("/w"), "GCC", "aarch64"), Path("/w/Build/AxlFwGuard/DEBUG_GCC/AARCH64/Overrun.efi")
+        )
+
+    def test_boot_checks_need_the_app(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            qemu = mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu")
+            missing = Path(t) / "Overrun.efi"
+            with qemu:
+                self.assertEqual(
+                    release.boot_checks(Path(t), "tag", None, Path(t) / "logs", {"x64": missing}),
+                    ({}, [f"{missing}: no Overrun.efi for the guard check"]),
+                )
 
 
 class BootChecksTests(unittest.TestCase):
@@ -1588,7 +1850,7 @@ class IsaTests(unittest.TestCase):
         ws, src = self.root / "ws", self.root / "src"
         ws.mkdir()
         text = (FIXTURES / "licenses" / "report.txt").read_text()
-        for target in ("DEBUG", "RELEASE"):
+        for target in ("DEBUG", "RELEASE", "GUARDED"):
             (ws / f"report-X64-{target}.txt").write_text(text)
             (ws / f"report-AARCH64-{target}.txt").write_text("not a report")
         calls: list[tuple[str, Path, list[Path]]] = []
@@ -1602,13 +1864,18 @@ class IsaTests(unittest.TestCase):
         with mock.patch.object(isa, "check_baseline", fake):
             got = release.isa_checks(ws, src, "GCC")
         self.assertEqual(
-            got, ({"x64": {"modules": 1}, "release/x64": {"modules": 2}}, ["x64: problem 1", "release/x64: problem 2"])
+            got,
+            (
+                {"x64": {"modules": 1}, "release/x64": {"modules": 2}, "guarded/x64": {"modules": 3}},
+                ["x64: problem 1", "release/x64: problem 2", "guarded/x64: problem 3"],
+            ),
         )
         self.assertEqual(
             calls,
             [
                 ("OVMF_CODE", ws / "Build/OvmfX64/DEBUG_GCC/X64", [ws / "overlay", src]),
                 ("OVMF_CODE", ws / "Build/OvmfX64/RELEASE_GCC/X64", [ws / "overlay", src]),
+                ("OVMF_CODE", ws / "guarded/Build/OvmfX64/DEBUG_GCC/X64", [ws / "overlay", src]),
             ],
         )
 
@@ -1635,7 +1902,7 @@ class IsaTests(unittest.TestCase):
         self.assertEqual(err.getvalue(), "FAIL: x64: beyond\n")
 
     def test_release_isa_checks(self) -> None:
-        # Both X64 image sets, from their own reports; AARCH64 is not read.
+        # Each X64 image set, from its own report; AARCH64 is not read.
         ws = self.root / "ws"
         ws.mkdir()
         counts, problems = release.isa_checks(ws, self.root / "src", "GCC")
@@ -1646,6 +1913,8 @@ class IsaTests(unittest.TestCase):
                 f"x64: the build report {ws}/report-X64-DEBUG.txt: [Errno 2] No such file or directory: '{ws}/report-X64-DEBUG.txt'",
                 f"release/x64: the build report {ws}/report-X64-RELEASE.txt: [Errno 2] No such file or directory: "
                 f"'{ws}/report-X64-RELEASE.txt'",
+                f"guarded/x64: the build report {ws}/report-X64-GUARDED.txt: [Errno 2] No such file or directory: "
+                f"'{ws}/report-X64-GUARDED.txt'",
             ],
         )
 
@@ -1840,17 +2109,19 @@ def _fake_tree(
     marker: str = "",
     tamper: Callable[[Manifest], None] | None = None,
     swap_descriptor: bool = False,
+    guarded: bool = True,
 ) -> Path:
     """A small unpacked release shaped as a real one; its top directory.
 
-    tamper edits the manifest before it is written.
+    tamper edits the manifest before it is written; without guarded, the
+    release is r2's shape, with no GUARDED sets.
     """
     tag, commit = "edk2-stable202611", "556dcfb466e9f05affeaff881d738807f8156d3c"
     stage = Path(tempfile.mkdtemp(dir=root, prefix=f"stage-{rel}-"))
     top = stage / f"axl-firmware-{rel}"
     images: dict[str, object] = {}
     (top / "descriptors").mkdir(parents=True)
-    for img in release.IMAGES:
+    for img in release.IMAGES if guarded else release.DESCRIBED:
         d = top / img.dir
         d.mkdir(parents=True)
         for name in ("code.fd", "vars.fd", img.shell):
@@ -1864,9 +2135,10 @@ def _fake_tree(
             "measured": {},
             "licenses": [{"path": "LICENSES/edk2-License.txt", "chosen": True}],
         }
-        (top / "descriptors" / img.descriptor(rel)).write_text(
-            json.dumps(release.descriptor(img, rel, tag, commit, ""))
-        )
+        if img.described:
+            (top / "descriptors" / img.descriptor(rel)).write_text(
+                json.dumps(release.descriptor(img, rel, tag, commit, ""))
+            )
     if swap_descriptor:
         d = top / "descriptors" / release.Image("x64", "DEBUG").descriptor(rel)
         bad = json.loads(d.read_text())
@@ -1886,7 +2158,7 @@ def _fake_tree(
         "default_flavour": "DEBUG",
         "hardware_images": {"x64": "release/x64", "aarch64": "release/aarch64"},
         "images": images,
-        "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in release.IMAGES],
+        "descriptors": [f"descriptors/{img.descriptor(rel)}" for img in release.DESCRIBED],
         "licenses": ["LICENSES/edk2-License.txt"],
     }
     if tamper:
@@ -1906,9 +2178,13 @@ def _fake_release(
     tamper: Callable[[Manifest], None] | None = None,
     swap_descriptor: bool = False,
     edit_tree: Callable[[Path], None] | None = None,
+    guarded: bool = True,
 ) -> Path:
     """A small release tarball shaped as a real one, and its SHA256SUMS."""
-    top = _fake_tree(root, rel, fmt=fmt, outside=outside, marker=marker, tamper=tamper, swap_descriptor=swap_descriptor)
+    top = _fake_tree(
+        root, rel, fmt=fmt, outside=outside, marker=marker, tamper=tamper, swap_descriptor=swap_descriptor,
+        guarded=guarded,
+    )
     if edit_tree:
         edit_tree(top)
     if corrupt:
@@ -1957,6 +2233,11 @@ class InstallTests(unittest.TestCase):
             ),
         )
         self.assertEqual((self.prefix / rel / "release/x64/code.fd").read_bytes(), f"{rel} release/x64 code.fd".encode())
+        # The guarded sets are installed and checked, with no descriptor.
+        self.assertEqual(
+            (self.prefix / rel / "guarded/aarch64/Shell_AARCH64.efi").read_bytes(),
+            f"{rel} guarded/aarch64 Shell_AARCH64.efi".encode(),
+        )
         # Another release: its descriptors replace these; r1's files stay.
         unrelated = self.prefix / "descriptors" / "50-other.json"
         unrelated.write_text("{}")
@@ -1977,6 +2258,16 @@ class InstallTests(unittest.TestCase):
         install.install("o/r", str(r2), self.prefix, None, symbols=False)
         self.assertEqual(sorted(p.name for p in self.prefix.iterdir()), sorted(
             [".lock", "descriptors", "edk2-stable202611-r1", "edk2-stable202611-r2"]))
+
+    def test_without_guarded_sets(self) -> None:
+        # r2's shape: the four sets only.
+        r2 = _fake_release(self.root, "edk2-stable202611-r2", guarded=False)
+        install.install("o/r", str(r2), self.prefix, None, symbols=False)
+        self.assertEqual(
+            sorted(p.name for p in (self.prefix / "edk2-stable202611-r2").iterdir()),
+            ["LICENSES", "aarch64", "descriptors", "manifest.json", "release", "x64"],
+        )
+        self.assertEqual(len(self._descriptors()), 4)
 
     def test_wrong_digest(self) -> None:
         r1 = _fake_release(self.root, "edk2-stable202611-r1")
@@ -2059,14 +2350,41 @@ class InstallTests(unittest.TestCase):
         def no_descriptors(m: Manifest) -> None:
             m["descriptors"] = []
 
+        def guarded_moved(m: Manifest) -> None:
+            images = cast("dict[str, dict[str, object]]", m["images"])
+            images["guarded/x64"]["code"] = images["x64"]["code"]
+
+        def guarded_digest(m: Manifest) -> None:
+            images = cast("dict[str, dict[str, dict[str, object]]]", m["images"])
+            images["guarded/aarch64"]["vars"]["sha256"] = "0" * 64
+
+        def escaping_set(m: Manifest) -> None:
+            images = cast("dict[str, object]", m["images"])
+            images["../x64"] = images["x64"]
+
+        def unknown_arch(m: Manifest) -> None:
+            images = cast("dict[str, object]", m["images"])
+            images["guarded/riscv64"] = images["guarded/x64"]
+
         want = ["aarch64", "release/aarch64", "release/x64", "x64"]
+        have = sorted([*want, "guarded/aarch64", "guarded/x64"])
         rel = "edk2-stable202611-r1"
         names = sorted(f"descriptors/{release.Image(a, f).descriptor(rel)}" for f in ("DEBUG", "RELEASE") for a in ("x64", "aarch64"))
         cases: dict[str, tuple[Callable[[Manifest], None], str]] = {
             "no descriptors": (no_descriptors, f"its manifest's descriptors are [], not {names}"),
             "moved": (moved, "its manifest names 'release/x64/code.fd' for x64's code, not 'x64/code.fd'"),
-            "partial": (partial, f"its manifest's images are {want[:1] + want[2:]}, not {want}"),
-            "empty": (empty, f"its manifest's images are [], not {want}"),
+            "partial": (
+                partial,
+                f"its manifest's images are {[x for x in have if x != 'release/aarch64']}, without ['release/aarch64']",
+            ),
+            "empty": (empty, f"its manifest's images are [], without {want}"),
+            "guarded moved": (
+                guarded_moved, "its manifest names 'x64/code.fd' for guarded/x64's code, not 'guarded/x64/code.fd'"
+            ),
+            "escaping set": (escaping_set, "its manifest lists an image set '../x64', not <name>/<x64|aarch64>"),
+            "unknown arch": (
+                unknown_arch, "its manifest lists an image set 'guarded/riscv64', not <name>/<x64|aarch64>"
+            ),
         }
         for label, (tamper, tail) in cases.items():
             with self.subTest(label):
@@ -2075,6 +2393,15 @@ class InstallTests(unittest.TestCase):
                     install.install("o/r", str(bad), self.prefix, None, symbols=False)
                 self.assertTrue(str(cm.exception).endswith(f"/axl-firmware-edk2-stable202611-r1: {tail}"), str(cm.exception))
                 self.assertEqual(os.listdir(self.prefix), [".lock"])
+        bad = _fake_release(self.root, "edk2-stable202611-r1", tamper=guarded_digest)
+        with self.assertRaises(install.InstallError) as cm:
+            install.install("o/r", str(bad), self.prefix, None, symbols=False)
+        self.assertTrue(
+            str(cm.exception).endswith("/axl-firmware-edk2-stable202611-r1/guarded/aarch64/vars.fd:"
+                                       " not guarded/aarch64's vars as its manifest records it"),
+            str(cm.exception),
+        )
+        self.assertEqual(os.listdir(self.prefix), [".lock"])
 
     def test_descriptor_naming_another_set(self) -> None:
         bad = _fake_release(self.root, "edk2-stable202611-r1", swap_descriptor=True)
@@ -2291,8 +2618,13 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertEqual(self._check(_fake_tree(self.root, "edk2-stable202611-r1")), (0, ""))
 
     def test_one_layout(self) -> None:
-        # The install checks the image sets the assembly writes.
-        self.assertEqual(sorted(img.dir for img in release.IMAGES), sorted(install.IMAGE_DIRS))
+        # The install requires the image sets the assembly describes, and
+        # checks every other it lists (GUARDED's).
+        self.assertEqual(sorted(img.dir for img in release.DESCRIBED), sorted(install.IMAGE_DIRS))
+        self.assertEqual(
+            [img.dir for img in release.IMAGES if not img.described and install.IMAGE_SET.fullmatch(img.dir)],
+            ["guarded/x64", "guarded/aarch64"],
+        )
         self.assertEqual(
             [img.files for img in release.IMAGES][:1],
             [{"code": "x64/code.fd", "vars": "x64/vars.fd", "shell": "x64/Shell_X64.efi"}],
@@ -2333,6 +2665,15 @@ class ReleaseCheckTests(unittest.TestCase):
             edk2 = cast("dict[str, list[dict[str, str]]]", m["edk2"])
             edk2["patches"] = [x for x in edk2["patches"] if x["name"] != "0007-shell-ctrl-s.patch"]
 
+        def hardware_guarded(m: Manifest) -> None:
+            m["hardware_images"] = {"x64": "release/x64", "aarch64": "guarded/aarch64"}
+
+        def no_guarded(m: Manifest) -> None:
+            del cast("dict[str, object]", m["images"])["guarded/x64"]
+
+        def guarded_descriptor(m: Manifest) -> None:
+            cast("dict[str, dict[str, object]]", m["images"])["guarded/x64"]["descriptor"] = "descriptors/30-x.json"
+
         want = sorted(img.dir for img in release.IMAGES)
         cases: dict[str, tuple[Callable[[Manifest], None], str]] = {
             "moved": (moved, "FAIL: x64: the manifest's code is 'release/x64/code.fd', not 'x64/code.fd'\n"),
@@ -2361,6 +2702,15 @@ class ReleaseCheckTests(unittest.TestCase):
             "patch missing": (
                 patch_missing,
                 "FAIL: manifest edk2.patches: 0007-shell-ctrl-s.patch: required, but the build did not apply it\n",
+            ),
+            "hardware GUARDED": (
+                hardware_guarded,
+                "FAIL: hardware_images.aarch64: 'guarded/aarch64' is of flavour 'GUARDED', not RELEASE\n",
+            ),
+            "no guarded": (no_guarded, f"FAIL: manifest images {[d for d in want if d != 'guarded/x64']}, not {want}\n"),
+            "guarded descriptor": (
+                guarded_descriptor,
+                "FAIL: guarded/x64: the manifest names a descriptor, 'descriptors/30-x.json'; it has none\n",
             ),
         }
         for label, (tamper, text) in cases.items():
