@@ -117,6 +117,13 @@ are as in r2.
   did; RELEASE code is unchanged. A new boot check, `reconnect`, runs
   `reconnect -r` on all four image sets and requires a DHCP lease after
   it (`reconnect_network` in each image's `measured`).
+- **TCP and virtio-fs boot checks** on the DEBUG and RELEASE sets:
+  `reconnect -r` while a resident server holds an accepted TCP connection
+  must return (patch 0013), and a virtio-fs file read from a timer beside
+  the Shell's must neither hang nor corrupt (patch 0011). The virtio-fs
+  one needs virtiofsd: skipped, said, without it, unless
+  `AXLFW_REQUIRE_VIRTIOFS=1`; CI installs it and requires it.
+  `measured.tcp_reconnect` and `measured.vfs_race` record them.
 - Each new tag re-checks every patch against upstream.
 
 ## edk2-stable202611-r2

@@ -252,6 +252,8 @@ Each `images.<dir>.measured`:
 | `cpu_models_reach_shell` | {model: bool} | AARCH64 only: a boot under each `-cpu` (`max`, `cortex-a57`, `neoverse-v1`) reached the Shell |
 | `pool_overrun` | string | DEBUG and GUARDED only, from r3: what a write one byte past a 64-byte pool buffer did (the guard check's application, run from the Shell): `fault` (GUARDED: the CPU exception, at the write) or `silent` (DEBUG: nothing noticed) |
 | `tpm` | {`device`, `shell`: bool, `pcrs_read`: bool} | a boot with swtpm attached as `device` (`tpm-tis` on X64, `tpm-tis-device` on AARCH64): it reached the Shell, and the check's application read SHA-256 PCRs 0-7 through EFI_TCG2_PROTOCOL (r3 on; `build.sh check` re-runs the boot without the application) |
+| `tcp_reconnect` | bool | DEBUG and RELEASE only, from r3, in a build (not `build.sh check`): `reconnect -r` returned while TcpHold.efi held an accepted TCP connection, its sockets went, and the network worked after it (patch 0013) |
+| `vfs_race` | string | DEBUG and RELEASE only, from r3, in a build: `pass` (VfsRace.efi read a virtio-fs file from a TPL_CALLBACK timer and the foreground at once, and the share came back after `reconnect -r`; patch 0011) or `skipped` (no virtiofsd where the release was built) |
 
 A consumer checks an installed image as the install does: the manifest parses
 with `format` 2, lists the four image sets `x64`, `aarch64`, `release/x64` and

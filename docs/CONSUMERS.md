@@ -162,7 +162,10 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0)`. OVMF's BDS connects it only
   when QEMU gives no boot order; with a `bootindex`, run `connect -r` first.
   QEMU sends it events only while it is QEMU's active mouse (`info mice`): a
-  USB or virtio mouse added later takes them. `-machine i8042=off` removes it.
+  USB or virtio mouse added later takes them. `-machine i8042=off` removes it,
+  and its polling: an idle r3 X64 guest under KVM exits about 1600 times a
+  second (r2: 1300), about 700 of them the mouse's port reads; with
+  `i8042=off`, about 760 (DESIGN §4.40).
 - **The serial console's terminal type, per arch.** Both arches' serial
   consoles are VT-UTF8 from r3 (AARCH64 was VT100): DEL (0x7f) is Backspace,
   and box drawing and characters beyond ASCII go out as UTF-8. A vars file

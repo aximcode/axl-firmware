@@ -907,7 +907,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       boots above.
 
 33. **The reproducers are kept, not run per release** (builder,
-    2026-11-25; the owner decides, §5 item 11). `tests/repro/`: ReproPkg
+    2026-11-25; **superseded** by the owner 2026-11-26, §5 item 11: they
+    are boot checks now, §4.39). `tests/repro/`: ReproPkg
     (VfsRace, TcpHold), `build-apps.sh` (built with the last build's
     BaseTools, X64 for baseline x86-64) and `repro.py` (on
     `lib/axlfw/boot.py`'s QEMU command line). As with patch 0005, the
@@ -1274,6 +1275,121 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       `.text` in Ip4Dxe, TcpDxe and Dhcp4Dxe (each links DxeNetLib);
       their `.data` differs, holding no differing string.
 
+39. **TCP and virtio-fs boot checks** (owner, 2026-11-26, at
+    integration; §5 item 11). The drivers branch's `repro.py tcp` and
+    `vfs` (§4.30, §4.32) are now release checks, in `lib/axlfw/netfs.py`;
+    `tests/repro/repro.py` runs the same functions by hand.
+    - *What runs.* Each DEBUG and RELEASE set (not GUARDED) gets two more
+      boots on the boot checks' command line (AARCH64 `cortex-a57`):
+      `tcp`, with a user-mode NIC forwarding a host port to 5555 and a
+      virtio-rng: TcpHold.efi accepts the host's connection and holds it,
+      `reconnect -r` must return within 60 s (`netfs.BOUND`), TcpHold's two
+      sockets gone, and TcpHold loaded again must accept; `vfs`, with a
+      virtiofsd share: VfsRace.efi from the share must print `vfsrace:
+      PASS` within 60 s, and after `reconnect -r` a volume must hold the
+      3000-byte file again. Stated as `measured.tcp_reconnect` (bool) and
+      `measured.vfs_race` (`pass`, or `skipped`).
+    - *Built by build.sh*: ReproPkg is the third entry of the one
+      guest-application loop (`guest_apps`, with the guard and TPM
+      checks'); `release.guest_apps` names where each lands. `build.sh
+      check`, on a packed release, has no applications, so neither check
+      runs there.
+    - *virtiofsd.* `AXLFW_VIRTIOFSD`, else `virtiofsd` on PATH, else
+      `/usr/libexec/virtiofsd`. Without one, the virtio-fs check is
+      skipped and says so on stderr (`SKIP: the virtio-fs boot check
+      ...`), and the manifest says `"vfs_race": "skipped"`; with
+      `AXLFW_REQUIRE_VIRTIOFS=1` a missing virtiofsd, or the variable set
+      where there is no VfsRace.efi (`build.sh check`), is a failure
+      before any boot. CI installs Ubuntu's `virtiofsd` (universe; noble
+      1.10.0, resolute 1.13.2; at `/usr/libexec/virtiofsd`, not on PATH)
+      and sets the variable on the build step. *To verify on CI's first
+      run:* that an unprivileged virtiofsd with `--sandbox=none` serves
+      the share there as it does here.
+    - *The TCP boot on AARCH64 runs under `cortex-a57`*, as every other
+      boot: with patch 0015 a DEBUG image no longer asserts when
+      `reconnect -r` stops the only RNG (§4.38), which is why the drivers
+      branch had measured it under `-cpu max`.
+    - *Unit tests* (`NetFsTests`, a stand-in Shell): TcpHold's sockets
+      before and after, a reconnect that hangs, a socket that outlives it;
+      VfsRace passing, failing, hanging, no share, the share lost or
+      renumbered after the reconnect; virtiofsd found, required, skipped;
+      the checks on DEBUG and RELEASE only; an application missing for an
+      arch. Each check mutated away in turn: RED (the after-socket check,
+      VfsRace's PASS, the share after the reconnect, the reconnect's
+      return, the requirement, the `skipped` fact, the flavours).
+    - *Cost and sabotage*: §4.40.
+
+40. **r3 integration** (2026-11-26). The five r3 branches (console,
+    drivers, release, tpm, rng) merged in that order onto `3fb3fa1`, with
+    DESIGN renumbered (§4.28-4.38, §5 items 9-13) and every citation with
+    it; one guest-application build loop and one `apps` parameter to
+    `release.boot_checks`; `checks.REQUIRED_PATCHES` naming every file in
+    `patches/` (0001-0015); each patch's header naming the one before it.
+    - *The owner's decisions* (2026-11-25/26), each recorded at its item:
+      - the serial Ctrl-S side effects (XOFF pauses the Shell; `edit` and
+        `hexedit` take the key after a save to resume) accepted (§5 item
+        10);
+      - patch 0006 names the PS/2 mouse PNP0F13, QEMU's DSDT's HID, not
+        the inventory's PNP0F03 (§5 item 9, §4.28);
+      - GUARDED has no QEMU descriptor: selected by path or by the
+        manifest, never by a descriptor search (§4.34);
+      - install.py's extra image sets accepted: an install checks every
+        `<name>/<arch>` set a manifest lists, and r2's install.py refuses
+        r3, so a consumer must update its checkout to install r3 (§4.34);
+      - the AARCH64 TPM fix in r3 (patch 0014, §4.37; §5 item 13);
+      - the RNG fix in r3 (patch 0015, §4.38; §5 item 12);
+      - the TCP and virtio-fs reproducers as per-release boot checks
+        (§4.39; §5 item 11).
+    - *The integration build* (`632a056`; AlmaLinux 10 x86_64, gcc 14,
+      QEMU 10.0.0, swtpm 0.9.0, virtiofsd 1.13.3; `JOBS=4`,
+      `AXLFW_BOOT_JOBS=2`, `AXLFW_REQUIRE_VIRTIOFS=1`; X64 under KVM,
+      AARCH64 under TCG): 15.5 min, every static check passed, and every
+      boot check but one: X64 GUARDED's TPM boot (§5 item 14), so nothing
+      was packed and `build.sh check` could not run. The reproducers below
+      ran on its staged images (the bytes it would have packed).
+    - *Reproducers on that build*, each on DEBUG unless said:
+
+      | Reproducer | Arch | Verdict | Observed |
+      |---|---|---|---|
+      | console `ps2-mouse` (0006) | x64 | GREEN | `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0)`, ResolutionZ 0, three `mouse_move 10 5` summed x,y,z 30, 15, 0 |
+      | console `ctrl-s` (0007) | x64, aarch64 | GREEN, GREEN | paused after tick 3, resumed with tick 4 |
+      | console `widechar` (0008) | x64, aarch64 | GREEN, GREEN | VT100: `wide<??>` |
+      | console `delete-absent` (0009) | x64, aarch64 | GREEN, GREEN | `Not Found (0x800000000000000E)` for `absent.txt` and `newdir\absent.txt`; no inotify event; the share holds `marker.txt`, `probe.efi` |
+      | console `wheel` (0010) | x64, aarch64 | GREEN, GREEN | virtio mouse ResolutionZ 8, summed 4, 0, 1 |
+      | console `pci-serial-bootindex` (0005) | aarch64 | GREEN | two SerialIo handles before any connect: the PL011's `VenHw(...)/Uart(38400,8,N,1)` and `PciRoot(0x0)/Pci(0x2,0x0)/Uart(38400,8,N,1)`; without `bootindex` the same |
+      | console `del-backspace` (VT-UTF8) | x64, aarch64 | GREEN, GREEN | `echo abX`, DEL, `c` printed `abc` |
+      | `repro.py tcp` (0013) | x64, aarch64 | GREEN, GREEN | `reconnect -r` 0.8 s and 0.4 s; TcpHold's two sockets before, none after; a new TcpHold accepted (AARCH64 under `cortex-a57`) |
+      | `repro.py vfs` (0011) | x64, aarch64 | GREEN, GREEN | `vfsrace: PASS`, cb=1000, 10.1 s each; the share listed again after `reconnect -r` |
+      | `repro.py idle` (0012), X64 RELEASE, KVM | x64 | GREEN for 0012 | vCPU 0: 1605 exits/s, of which io 1000, halt 100: 605 others, as the drivers branch's 612 with 0012 (1061 without). *But* io exits are 1000/s, not r2's 300: the console branch's RELEASE X64 measured 2006 (io 1000), r2's 1301 (io 300), and this build with `-machine i8042=off` 757 (io 150). So 0006's PS/2 mouse, now bound, polls the i8042 for about 700 port reads a second at an idle Shell, more than 0012 saves: an idle r3 X64 guest exits about 300 times a second more than r2's |
+      | guard-overrun (the build's boot check) | x64, aarch64 | GREEN | GUARDED faulted (X64 `#PF` `W:1 P:0` in `Overrun.dll`; AARCH64 `Synchronous Exception` with `Overrun.dll` first); DEBUG `written, no fault` |
+      | TPM PCR read (the build's boot check, every set) | x64, aarch64 | GREEN on five sets; **RED on X64 GUARDED** | `PcrRead.efi`: 8 PCRs and `done` on DEBUG, RELEASE and AARCH64 GUARDED; X64 GUARDED never reached the Shell (§5 item 14) |
+      | reconnect without an RNG instruction (0015; the build's boot check) | x64, aarch64 | GREEN on all six sets | five "Failed to locate EFI_RNG_PROTOCOL" lines and no ASSERT in each DEBUG and GUARDED debug log; DHCP lease after |
+      | `tcp` and `vfs` boot checks (§4.39; the build's) | x64, aarch64 | GREEN on the four default sets | `tcphold: received 6 bytes` twice per boot; `vfsrace: PASS` cb=1000 |
+
+    - *Unchanged from r2*: the text modes measured on every set
+      (`serial`, `std-vga`, `virtio-gpu`, `bochs-display`, read from the
+      boots' transcripts) equal r2's manifest's, GUARDED's equal DEBUG's;
+      the X64 (and AARCH64) GOP is 1280x800 (std-VGA and bochs-display,
+      checked by the boot checks); SMBIOS type 0's BIOS version is
+      `edk2-stable202611` on every set, and build.sh's identity PCDs are
+      unchanged; `hardware_images` names `release/x64` and
+      `release/aarch64` only (checked).
+    - *The `tcp` and `vfs` checks' cost*: each TCP boot took about 10 s and
+      each virtio-fs boot 15-17 s (from the transcripts), eight boots two
+      at a time: about 50 s of the build's wall time here, plus ReproPkg's
+      two builds (seconds). On CI's runner, AARCH64 under TCG is slower:
+      about 1.5-2 minutes, an estimate until CI measures it.
+    - *Sabotage of the `tcp` check*: the same tree without
+      `0013-tcp-clone-child.patch`, and without its name in
+      `REQUIRED_PATCHES` (so the static checks pass), built the same way:
+      exactly the four TCP boots failed, `x64 DEBUG: the TCP reconnect check
+      (patch 0013): x64-debug-tcp: reconnect -r did not return within 60 s
+      while TcpHold held an accepted connection (sockets [('FC', '0.0.0.0'),
+      ('FE', '10.0.2.2')])`, and the same for x64 RELEASE, aarch64 DEBUG and
+      RELEASE (sockets 105 and 107), with §5 item 14's X64 GUARDED TPM boot,
+      as in the integration build; every other check, `vfs` included,
+      passed. Both files restored by copy and checked by sha256.
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact
@@ -1359,14 +1475,17 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    published (a one-character change to 0006; no consumer reads the path
    yet).
 10. **Serial Ctrl-S in the editors, and XOFF** (raised 2026-11-25 in review
-   of 0007, §4.28). With 0007 a serial 0x13 pauses output everywhere the
+   of 0007, §4.28; **decided** by the owner 2026-11-26: accepted as it is,
+   the side effects in `edit`/`hexedit` and a terminal's XOFF included). With 0007 a serial 0x13 pauses output everywhere the
    Shell's console logger writes: in `edit` and `hexedit`, whose Save is
    Ctrl-S, the key after a save is taken to resume output (as a keyboard's
    Ctrl-S did already), and a terminal or terminal server sending XOFF
    pauses the Shell until the next key. *Recommendation:* accept it, as the
    keyboard's behaviour; skipping the pause while an editor runs would be a
    further ShellPkg change.
-11. **Boot checks for patches 0011 and 0013** (raised 2026-11-25, §4.33).
+11. **Boot checks for patches 0011 and 0013** (raised 2026-11-25, §4.33;
+    **decided** by the owner 2026-11-26: both, `tcp` on all four default
+    image sets, `vfs` wherever virtiofsd is, required on CI: §4.39).
     The release could run `tests/repro/repro.py vfs` and `tcp` on each
     image set: about 25 s and 15 s a boot, plus building ReproPkg in the
     build and virtiofsd on CI's runner. *Recommendation:* add the `tcp`
@@ -1385,7 +1504,7 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     drivers first, or NetLib not asserting) only if a consumer needs
     reconnect on AARCH64 without RNDR.
 13. **AARCH64 with a TPM faults in PEI** (found 2026-11-25 measuring PCRs
-    for SoftBMC; not fixed in r3 by this builder). r2 AARCH64 DEBUG with
+    for SoftBMC; **decided** by the owner: fixed in r3, patch 0014, §4.37). r2 AARCH64 DEBUG with
     swtpm (`-chardev socket,... -tpmdev emulator,... -device
     tpm-tis-device,tpmdev=tpm0`) stops after its banner: `Synchronous
     Exception at 0x4A700`, X20 = `0x0c000000`, the virt machine's platform
@@ -1398,6 +1517,34 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     `QemuVirtMemInfoLib` as 0003 maps the PL011s (a patch, and a TPM boot
     check per arch), when a consumer needs a TPM on AARCH64; SoftBMC asked
     about PCRs.
+14. **GUARDED X64 with a TPM ASSERTs in PcdDxe** (found 2026-11-26 by the
+    integration build; **open: blocks the r3 tag**). The integrated build
+    passed every check but one: `x64 GUARDED: with a TPM (tpm-tis): no
+    Shell prompt within 180 s`, nothing on the serial console. Reproduced
+    once with debugcon (AlmaLinux 10 x86_64, QEMU 10.0.0, KVM, swtpm
+    0.9.0): `ASSERT UefiLib.c(435): Lock->Lock == EfiLockReleased`, then
+    the dead loop. The frame chain (HMP, by RBP) and addr2line on the
+    guarded build's `.debug` files: Tcg2ConfigDxe's
+    `InitializeTcg2VersionInfo` (Tcg2ConfigDriver.c:202, `PcdGetPtr
+    (PcdTcgPhysicalPresenceInterfaceVer)`, a DynamicHii PCD whose variable
+    exists) -> PcdDxe `GetWorker` (Service.c:467, holding
+    `mPcdDatabaseLock`) -> `GetHiiVariable` -> `AllocatePool` -> DxeCore,
+    which with the pool guard sets a guard page -> CpuDxe
+    `CpuSetMemoryAttributes` -> `GetPageTableEntry` (CpuPageTable.c:311,
+    `PcdGet64 (PcdPteMemoryEncryptionAddressOrMask)`, dynamic on OVMF) ->
+    PcdDxe `GetWorker` again -> `EfiAcquireLock` on the held lock. An
+    upstream PcdDxe defect (it allocates under its own lock), reached only
+    when a heap-guarded allocation calls back into PCD: X64 GUARDED
+    (AARCH64's CpuDxe reads no dynamic PCD; its GUARDED TPM boot passed),
+    whenever a DynamicHii PCD whose variable exists is read. DEBUG and
+    RELEASE are unaffected (no guard page set on allocation).
+    *Recommendation:* a patch 0016 to PcdDxe, releasing
+    `mPcdDatabaseLock` around `GetHiiVariable` in `GetWorker` (it touches
+    only the variable services and the pool, not the database), with the
+    GUARDED TPM boot as its reproducer (RED now) and a rebuild; or, if r3
+    should not take another patch, keep GUARDED out of the TPM boot check
+    and say in CONSUMERS.md that X64 GUARDED with a TPM does not boot.
+    Not decided here.
 
 ## 6. Assumptions
 
