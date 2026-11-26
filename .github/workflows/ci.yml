@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck python3-venv
       - name: shellcheck
-        run: shellcheck build.sh tests/firmware-tests.sh
+        run: shellcheck build.sh tests/firmware-tests.sh tests/repro/build-apps.sh tests/console-repro/build-probe.sh
       - name: pyright (strict)
         run: npx --yes pyright@1.1.408
       - name: The tests that need no build

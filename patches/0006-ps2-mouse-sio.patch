@@ -10,10 +10,10 @@ Add a PNP0F13 (PS/2 port for PS/2-style mice) child, UID 0, sharing the
 keyboard controller's ports 0x60 and 0x64: the _HID QEMU's own DSDT
 gives the i8042's mouse (hw/input/pckbd.c), as PNP0303 is its keyboard's.
 It goes after the existing entries, so their indices and device paths are
-unchanged. Ps2MouseDxe
-then gives PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0) a SimplePointer.
-QEMU sends PS/2 mouse events only while no other mouse (USB, virtio) is
-its active one.
+unchanged. Ps2MouseDxe then gives
+PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0) a SimplePointer. QEMU sends
+PS/2 mouse events only while no other mouse (USB, virtio) is its active
+one.
 
 axl-firmware's patch against edk2-stable202611, applied after
 0005-pci-serial.patch to a copy of the packages it touches.

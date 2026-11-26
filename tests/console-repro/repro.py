@@ -44,9 +44,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
-from axlfw import boot, install  # noqa: E402
+from axlfw import boot, install, netfs  # noqa: E402
 
-VIRTIOFSD = Path("/usr/libexec/virtiofsd")
 _POINTER = re.compile(r"pointer (\d+): (\S+) res (\d+),(\d+),(\d+)")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
 _STATE = re.compile(r"pointer (\d+): x=(-?\d+) y=(-?\d+) z=(-?\d+) l=(\d) r=(\d)")
@@ -271,15 +270,13 @@ def run_item(item: str, arch: str, a: argparse.Namespace) -> Run | str:
             (share / "marker.txt").write_text("marker\n")
             shutil.copyfile(probe, share / "probe.efi")
             sock = Path(socks) / "vfs.sock"
-            fsd = subprocess.Popen(  # noqa: S603 - our own arguments
-                [str(VIRTIOFSD), f"--socket-path={sock}", f"--shared-dir={share}", "--sandbox=none"],
-                stdout=subprocess.DEVNULL,
-                stderr=(a.out / f"{tag}.virtiofsd").open("wb"),
-            )
-            for _ in range(100):
-                if sock.exists():
-                    break
-                time.sleep(0.05)
+            fsd_path = netfs.virtiofsd()
+            if fsd_path is None:
+                return f"no virtiofsd ({netfs.VIRTIOFSD_ENV}, PATH or /usr/libexec/virtiofsd)"
+            try:
+                fsd = netfs.start_virtiofsd(fsd_path, share, sock, a.out / f"{tag}.virtiofsd")
+            except boot.BootError as err:
+                return str(err)
             extra = [
                 "-object", "memory-backend-file,id=mem,size=1024M,mem-path=/dev/shm,share=on",
                 "-numa", "node,memdev=mem",
@@ -302,8 +299,7 @@ def run_item(item: str, arch: str, a: argparse.Namespace) -> Run | str:
         finally:
             g.close()
             if fsd is not None:
-                fsd.terminate()
-                fsd.wait(10)
+                netfs.stop(fsd)
         return r
 
 

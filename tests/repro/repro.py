@@ -172,7 +172,11 @@ def main() -> int:
             shutil.copyfile(apps / netfs.VFS_APP, share / netfs.VFS_APP)
             (share / netfs.RACE_FILE).write_bytes(netfs.RACE_BYTES)
             sock = Path(socks) / "fs.sock"
-            fsd = netfs.start_virtiofsd(a.virtiofsd, share, sock, out / f"{name}.virtiofsd.log")
+            try:
+                fsd = netfs.start_virtiofsd(a.virtiofsd, share, sock, out / f"{name}.virtiofsd.log")
+            except boot.BootError as err:
+                say(f"{name}: SETUP {err}")
+                return 2
             argv = netfs.vfs_argv(a.qemu_dir, s, vars_copy, esp, sock)
         elif mode == "tcp":
             argv = netfs.tcp_argv(a.qemu_dir, s, vars_copy, esp, port, a.cpu)

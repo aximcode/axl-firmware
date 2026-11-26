@@ -420,10 +420,11 @@ def boot_checks(
     problems = [x for x in (jobs, timeout) if isinstance(x, str)]
     problems += boot.missing_qemu(qemu_dir, checks.ARCHES)
     problems += tpm.missing_swtpm()
-    problems += [
-        f"{p}: no {name} for {APPS[name][0]}" for name, per in (apps or {}).items() for p in per.values() if not p.is_file()
-    ]
     given = apps or {}
+    for name, per in given.items():
+        problems += [f"no {name} for {arch}, for {APPS[name][0]}" for arch in checks.ARCHES if arch not in per]
+        problems += [f"{p}: no {name} for {APPS[name][0]}" for p in per.values() if not p.is_file()]
+    problems += netfs.required_problems(netfs.VFS_APP in given)
     fsd = netfs.virtiofsd() if netfs.VFS_APP in given else None
     if netfs.VFS_APP in given:
         problems += netfs.virtiofsd_problems(fsd)

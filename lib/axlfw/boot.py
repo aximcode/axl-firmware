@@ -575,6 +575,8 @@ def del_backspace(g: Guest) -> None:
 
 
 # --- end of r3 console: the Ctrl-S boot check --------------------------------
+
+
 def first_assert(text: str) -> str | None:
     """The first DebugLib assertion line in a debug log, if any."""
     m = _ASSERT.search(text.replace("\r", ""))
@@ -800,7 +802,8 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
 
         attempt("ctrl-s", [], ctrl_s)
         # --- end of r3 console ---
-        # Its own vars copy: `ifconfig -s eth0 dhcp` keeps the policy in NV.
+
+        # The reconnect boot (patch 0015). Its own vars copy: `ifconfig -s eth0 dhcp` keeps the policy in NV.
         net_vars = t / "net-vars.fd"
         shutil.copyfile(s.vars, net_vars)
         net_debug = workdir / f"{tag}-reconnect-debug.log"
@@ -810,7 +813,8 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
 
         def reconnect(g: Guest) -> None:
             g.prompt()
-            reconnect_network(g, net_debug, s.flavour == "DEBUG")
+            # GUARDED is a DEBUG build: its debug channel says the same.
+            reconnect_network(g, net_debug, debug)
             result.facts["reconnect_network"] = True
 
         attempt("reconnect", [], reconnect, reconnect_argv(qemu_argv(qemu_dir, s, net_vars, esp), s.arch, net_debug))

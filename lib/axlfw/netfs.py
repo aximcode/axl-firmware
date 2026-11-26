@@ -100,6 +100,16 @@ def required() -> bool:
     return os.environ.get(REQUIRE_ENV, "") == "1"
 
 
+def required_problems(given: bool) -> list[str]:
+    """The virtio-fs check required, where its application is not given."""
+    if given or not required():
+        return []
+    return [
+        f"{REQUIRE_ENV}=1 requires the virtio-fs boot check, which needs {VFS_APP}"
+        " (a build has it; `build.sh check` does not)"
+    ]
+
+
 def virtiofsd_problems(fsd: Path | None) -> list[str]:
     """A virtiofsd named but not executable, or none where one is required."""
     if fsd is not None:
@@ -186,11 +196,11 @@ def tcp_reconnect(g: boot.Guest, port: int, bound: float = BOUND) -> tuple[float
 
 
 def find_share(g: boot.Guest) -> str | None:
-    """The Shell volume holding the race file, after a `connect -r`."""
+    """The Shell volume holding the race file, whole, after a `connect -r`."""
     g.command("connect -r")
     for n in range(6):
         listing = g.command(f"ls fs{n}:\\{RACE_FILE}")
-        if RACE_FILE in listing and "Not Found" not in listing:
+        if RACE_FILE in listing and f"{len(RACE_BYTES):,}" in listing:
             return f"fs{n}:"
     return None
 
@@ -222,10 +232,10 @@ def vfs_race(g: boot.Guest, bound: float = BOUND) -> tuple[str, float]:
     if reconnect(g, bound) is None:
         msg = f"{g.name}: reconnect -r did not return within {bound:.0f} s after {VFS_APP}"
         raise boot.BootError(msg)
+    # The share may come back under another number.
     g.command("map -r")
-    listing = g.command(f"ls {vol}\\{RACE_FILE}")
-    if f"{len(RACE_BYTES):,}" not in listing:
-        msg = f"{g.name}: after reconnect -r, {vol} does not list {RACE_FILE}: {listing.strip()!r}"
+    if find_share(g) is None:
+        msg = f"{g.name}: after reconnect -r, no virtio-fs volume holds {RACE_FILE}"
         raise boot.BootError(msg)
     return m.group(0), took
 

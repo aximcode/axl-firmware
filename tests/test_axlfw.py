@@ -1124,8 +1124,10 @@ class GuardTests(unittest.TestCase):
             missing = Path(t) / "Overrun.efi"
             with qemu:
                 self.assertEqual(
-                    release.boot_checks(Path(t), "tag", None, Path(t) / "logs", {guard.APP: {"x64": missing}}),
-                    ({}, [f"{missing}: no Overrun.efi for the guard check"]),
+                    release.boot_checks(
+                        Path(t), "tag", None, Path(t) / "logs", {guard.APP: {arch: missing for arch in checks.ARCHES}}
+                    ),
+                    ({}, [f"{missing}: no Overrun.efi for the guard check"] * 2),
                 )
 
 
@@ -1136,7 +1138,7 @@ class GuardTests(unittest.TestCase):
 # drops them and gives the prompt back, or, "hangs", never does; "lingers"
 # keeps a socket. fs1: holds race.txt; VfsRace.efi passes, or "vfs-fail"
 # fails, or "vfs-hangs" says nothing; "vfs-lost" loses the share after a
-# reconnect; "no-share" has none.
+# reconnect, "vfs-renumbered" moves it to fs2:; "no-share" has none.
 _FAKE_NETFS = r"""
 import os, socket, sys, threading
 mode, port = sys.argv[1], int(sys.argv[2])
@@ -1144,6 +1146,7 @@ lock = threading.Lock()
 held = []
 vol = ["Shell"]
 lost = [False]
+moved = [False]
 def out(s):
     with lock:
         os.write(1, s.encode())
@@ -1185,8 +1188,9 @@ while (c := os.read(0, 1)):
             h.close()
         del held[1 if mode == "lingers" else 0:]
         lost[0] = mode == "vfs-lost"
+        moved[0] = mode == "vfs-renumbered"
     elif cmd.startswith("ls fs"):
-        if cmd == "ls fs1:\\race.txt" and mode != "no-share" and not lost[0]:
+        if cmd == f"ls fs{2 if moved[0] else 1}:\\race.txt" and mode != "no-share" and not lost[0]:
             out("11/26/2026  01:00              3,000  race.txt\r\n")
         else:
             out("ls: File Not Found - 'x'\r\n")
@@ -1255,12 +1259,17 @@ class NetFsTests(unittest.TestCase):
         for mode, want in (
             ("vfs-fail", "fake: vfsrace: FAIL read 3 differs"),
             ("no-share", "fake: no virtio-fs volume holds race.txt"),
-            ("vfs-lost", "fake: after reconnect -r, fs1: does not list race.txt: \"ls: File Not Found - 'x'\""),
+            ("vfs-lost", "fake: after reconnect -r, no virtio-fs volume holds race.txt"),
         ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as t:
                 with self.assertRaises(boot.BootError) as cm:
                     netfs.vfs_race(self.guest(t, mode), bound=2)
                 self.assertEqual(str(cm.exception), want)
+
+    def test_vfs_share_renumbered(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            line, _ = netfs.vfs_race(self.guest(t, "vfs-renumbered"), bound=2)
+            self.assertEqual(line, "vfsrace: PASS cb=1000 fg=5615")
 
     def test_vfs_hangs(self) -> None:
         with tempfile.TemporaryDirectory() as t:
@@ -1341,7 +1350,7 @@ class NetFsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"AXLFW_REQUIRE_VIRTIOFS": "1"}), \
                 mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"), \
                 mock.patch.object(netfs, "virtiofsd", return_value=None):
-            apps = {netfs.VFS_APP: {"x64": Path(t) / "VfsRace.efi"}}
+            apps = {netfs.VFS_APP: {arch: Path(t) / "VfsRace.efi" for arch in checks.ARCHES}}
             apps[netfs.VFS_APP]["x64"].write_bytes(b"x")
             self.assertEqual(
                 release.boot_checks(Path(t), "tag", None, Path(t) / "logs", apps),
@@ -1352,6 +1361,31 @@ class NetFsTests(unittest.TestCase):
                         " AXLFW_REQUIRE_VIRTIOFS=1 requires the virtio-fs boot check"
                     ],
                 ),
+            )
+
+
+    def test_require_without_the_app(self) -> None:
+        # `build.sh check` has no VfsRace.efi: required, that is a failure.
+        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"AXLFW_REQUIRE_VIRTIOFS": "1"}), \
+                mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"):
+            self.assertEqual(
+                release.boot_checks(Path(t), "tag", None, Path(t) / "logs"),
+                (
+                    {},
+                    [
+                        "AXLFW_REQUIRE_VIRTIOFS=1 requires the virtio-fs boot check, which needs VfsRace.efi"
+                        " (a build has it; `build.sh check` does not)"
+                    ],
+                ),
+            )
+
+    def test_app_for_every_arch(self) -> None:
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"):
+            app = Path(t) / "TcpHold.efi"
+            app.write_bytes(b"x")
+            self.assertEqual(
+                release.boot_checks(Path(t), "tag", None, Path(t) / "logs", {netfs.TCP_APP: {"x64": app}}),
+                ({}, ["no TcpHold.efi for aarch64, for the TCP reconnect check"]),
             )
 
 
