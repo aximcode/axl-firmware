@@ -22,6 +22,26 @@ for real hardware. Everything else is as in r2.
   manifest stays format 2: no existing field was removed or reshaped
   (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
+- **The guarded image** (`guarded/x64`, `guarded/aarch64`): the DEBUG
+  build with edk2's UEFI page and pool guards (`PcdHeapGuardPropertyMask`
+  0x03, pool and page types 0x1E), so a write past a pool buffer or a page
+  allocation faults at the write. It has no QEMU descriptor, so no
+  descriptor search picks it: select it by path, by the manifest's
+  `images["guarded/<arch>"]` (`flavour` `GUARDED`), or by axlvmpool's
+  `config.toml` pin (docs/CONSUMERS.md). Checked: its three PCDs, and a
+  boot in which a one-byte pool overrun faults on GUARDED and passes on
+  DEBUG. Slower and larger than DEBUG (docs/DESIGN.md §4.28).
+- **install.py**: checks every image set a manifest lists, requiring the
+  four (an install from an r2 checkout refuses r3); refuses a duplicate
+  member, a member over 128 MiB and a release over 1 GiB before writing
+  anything; and says a truncated or uncompressed tarball is one, where it
+  raised before. `tests/conformance/` is the installer conformance
+  fixture other installers vendor.
+- The driver check also requires VirtioInputDxe and RamDiskDxe on both
+  arches (both were in every r1 and r2 image). docs/CONSUMERS.md: an
+  absolute pointer is `-device virtio-tablet-pci` (`usb-tablet` gives
+  none), and networking needs an RNG (RDRAND, `-cpu max`, or
+  `-device virtio-rng-pci`).
 - Each new tag re-checks all five patches against upstream.
 
 ## edk2-stable202611-r2

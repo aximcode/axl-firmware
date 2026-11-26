@@ -24,6 +24,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
@@ -39,8 +40,22 @@ _TAG = re.compile(r"^edk2-stable\d{6}(?:\.\d+)?-r\d+$")
 _OURS = re.compile(r"^[12]0-axl-firmware-.*\.json$")
 FORMAT = 2
 # A release's image sets, by directory: DEBUG at the top, RELEASE under
-# release/. Every one must be there.
+# release/. Every one must be there, each with its descriptor.
 IMAGE_DIRS = ("x64", "aarch64", "release/x64", "release/aarch64")
+# Any further set a release lists (r3's guarded/x64 and guarded/aarch64):
+# <name>/<arch>, checked as the four are, with no descriptor. A set of
+# another shape is refused.
+IMAGE_SET = re.compile(r"[a-z][a-z0-9-]*/(?:x64|aarch64)")
+# Top-level names of the release and its install that no image set may take.
+RESERVED = ("descriptors", "symbols", "patches", "LICENSES")
+# The largest member an install writes, and the largest total: a release's
+# largest file is an AARCH64 image, 64 MiB (its flash bank); r3 unpacks to
+# about 420 MiB. Over either, the tarball is refused before anything is
+# written (a decompression bomb would otherwise fill the disk).
+MAX_MEMBER = 128 * 1024 * 1024
+MAX_TOTAL = 1024 * 1024 * 1024
+# The most members an install writes: r3's tarball has 153.
+MAX_MEMBERS = 4096
 
 
 def descriptor_name(d: str, release: str) -> str:
@@ -231,28 +246,59 @@ def _verify(path: Path, sha: str | None, shown: Path) -> None:
         raise InstallError(msg)
 
 
+def _members(tar: tarfile.TarFile, top: str, shown: Path) -> list[tarfile.TarInfo]:
+    """tar's members, each checked as its header is read, before any is
+    written: a regular file or a directory, under top/, no `..`, not
+    absolute, named once, at most MAX_MEMBER bytes, MAX_TOTAL in all, and
+    MAX_MEMBERS of them. Each is written 0644 (a directory 0755), owned by
+    the user: the tarball's own mode and owner are dropped (as the "data"
+    filter does in part, and an older Python's extractall does not)."""
+    members: list[tarfile.TarInfo] = []
+    seen: set[str] = set()
+    total = 0
+    for m in tar:
+        if len(members) == MAX_MEMBERS:
+            msg = f"{shown}: more than {MAX_MEMBERS} members"
+            raise InstallError(msg)
+        parts = Path(m.name).parts
+        if not parts or parts[0] != top or ".." in parts or m.name.startswith("/") or not (m.isfile() or m.isdir()):
+            msg = f"{shown}: unexpected member {m.name!r}"
+            raise InstallError(msg)
+        name = "/".join(parts)
+        if name in seen:
+            msg = f"{shown}: member {m.name!r} appears twice"
+            raise InstallError(msg)
+        seen.add(name)
+        if m.size > MAX_MEMBER:
+            msg = f"{shown}: member {m.name!r} is {m.size} bytes, over {MAX_MEMBER}"
+            raise InstallError(msg)
+        total += m.size
+        if total > MAX_TOTAL:
+            msg = f"{shown}: its members total more than {MAX_TOTAL} bytes"
+            raise InstallError(msg)
+        m.mode = 0o755 if m.isdir() else 0o644
+        m.uid, m.gid = os.getuid(), os.getgid()
+        m.uname = m.gname = ""
+        members.append(m)
+    return members
+
+
 def _extract(tarball: Path, top: str, into: Path, shown: Path) -> Path:
     """Unpack tarball, whose every member must sit under top/, into into.
 
-    shown is where tarball came from, for the messages.
+    shown is where tarball came from, for the messages. A tarball that is
+    not a complete xz-compressed tar is refused, said.
     """
-    with tarfile.open(tarball, "r:xz") as tar:
-        members = tar.getmembers()
-        for m in members:
-            parts = Path(m.name).parts
-            if (
-                not parts
-                or parts[0] != top
-                or ".." in parts
-                or m.name.startswith("/")
-                or not (m.isfile() or m.isdir())
-            ):
-                msg = f"{shown}: unexpected member {m.name!r}"
-                raise InstallError(msg)
-        if hasattr(tarfile, "data_filter"):
-            tar.extractall(into, members, filter="data")
-        else:  # Python before 3.12: the members are checked above.
-            tar.extractall(into, members)  # noqa: S202
+    try:
+        with tarfile.open(tarball, "r:xz") as tar:
+            members = _members(tar, top, shown)
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(into, members, filter="data")
+            else:  # Python before 3.12: the members are checked above.
+                tar.extractall(into, members)  # noqa: S202
+    except (tarfile.TarError, EOFError, lzma.LZMAError) as err:
+        msg = f"{shown}: not a complete xz-compressed tar: {err}"
+        raise InstallError(msg) from err
     return into / top
 
 
@@ -291,11 +337,21 @@ def _check_set(root: Path, release: str) -> dict[str, object]:
         msg = f"{root}: its manifest names release {manifest.get('release')!r}, not {release!r}"
         raise InstallError(msg)
     images = json_object(manifest.get("images"))
-    if images is None or sorted(images) != sorted(IMAGE_DIRS):
+    required: set[str] = set(IMAGE_DIRS)
+    missing = sorted(required) if images is None else sorted(required - set(images))
+    if images is None or missing:
         got = manifest.get("images") if images is None else sorted(images)
-        msg = f"{root}: its manifest's images are {got}, not {sorted(IMAGE_DIRS)}"
+        msg = f"{root}: its manifest's images are {got}, without {missing}"
         raise InstallError(msg)
-    for d in IMAGE_DIRS:
+    extra = sorted(set(images) - required)
+    for d in extra:
+        if not IMAGE_SET.fullmatch(d):
+            msg = f"{root}: its manifest lists an image set {d!r}, not <name>/<x64|aarch64>"
+            raise InstallError(msg)
+        if d.split("/", 1)[0] in RESERVED:
+            msg = f"{root}: its manifest lists an image set {d!r}, a name the release layout reserves"
+            raise InstallError(msg)
+    for d in [*IMAGE_DIRS, *extra]:
         entry = json_object(images[d]) or {}
         for key, want in image_files(d).items():
             f = json_object(entry.get(key)) or {}

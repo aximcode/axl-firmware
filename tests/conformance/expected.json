@@ -1,0 +1,759 @@
+{
+  "format": 1,
+  "generator": "tests/conformance/make-fixture.py",
+  "release": "edk2-stable200001-r1",
+  "max_member": 134217728,
+  "max_total": 1073741824,
+  "max_members": 4096,
+  "installed": {
+    "files": "each installed or waiting case's files: every file under <prefix>, by path, its sha256",
+    "descriptors": {
+      "10-axl-firmware-edk2-stable200001-r1-x64.json": {
+        "description": "axl-firmware edk2-stable200001-r1 for X64 (q35), DEBUG, edk2 edk2-stable200001",
+        "interface-types": [
+          "uefi"
+        ],
+        "mapping": {
+          "device": "flash",
+          "mode": "split",
+          "executable": {
+            "filename": "{prefix}/edk2-stable200001-r1/x64/code.fd",
+            "format": "raw"
+          },
+          "nvram-template": {
+            "filename": "{prefix}/edk2-stable200001-r1/x64/vars.fd",
+            "format": "raw"
+          }
+        },
+        "targets": [
+          {
+            "architecture": "x86_64",
+            "machines": [
+              "pc-q35-*"
+            ]
+          }
+        ],
+        "features": [
+          "acpi-s3",
+          "amd-sev",
+          "amd-sev-es",
+          "verbose-dynamic"
+        ],
+        "tags": [
+          "edk2-stable200001",
+          "0000000000000000000000000000000000000001",
+          "edk2-stable200001-r1",
+          "DEBUG"
+        ]
+      },
+      "10-axl-firmware-edk2-stable200001-r1-aarch64.json": {
+        "description": "axl-firmware edk2-stable200001-r1 for AARCH64 (virt), DEBUG, edk2 edk2-stable200001",
+        "interface-types": [
+          "uefi"
+        ],
+        "mapping": {
+          "device": "flash",
+          "mode": "split",
+          "executable": {
+            "filename": "{prefix}/edk2-stable200001-r1/aarch64/code.fd",
+            "format": "raw"
+          },
+          "nvram-template": {
+            "filename": "{prefix}/edk2-stable200001-r1/aarch64/vars.fd",
+            "format": "raw"
+          }
+        },
+        "targets": [
+          {
+            "architecture": "aarch64",
+            "machines": [
+              "virt-*"
+            ]
+          }
+        ],
+        "features": [
+          "verbose-static"
+        ],
+        "tags": [
+          "edk2-stable200001",
+          "0000000000000000000000000000000000000001",
+          "edk2-stable200001-r1",
+          "DEBUG"
+        ]
+      },
+      "20-axl-firmware-edk2-stable200001-r1-release-x64.json": {
+        "description": "axl-firmware edk2-stable200001-r1 for X64 (q35), RELEASE, edk2 edk2-stable200001",
+        "interface-types": [
+          "uefi"
+        ],
+        "mapping": {
+          "device": "flash",
+          "mode": "split",
+          "executable": {
+            "filename": "{prefix}/edk2-stable200001-r1/release/x64/code.fd",
+            "format": "raw"
+          },
+          "nvram-template": {
+            "filename": "{prefix}/edk2-stable200001-r1/release/x64/vars.fd",
+            "format": "raw"
+          }
+        },
+        "targets": [
+          {
+            "architecture": "x86_64",
+            "machines": [
+              "pc-q35-*"
+            ]
+          }
+        ],
+        "features": [
+          "acpi-s3",
+          "amd-sev",
+          "amd-sev-es"
+        ],
+        "tags": [
+          "edk2-stable200001",
+          "0000000000000000000000000000000000000001",
+          "edk2-stable200001-r1",
+          "RELEASE"
+        ]
+      },
+      "20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": {
+        "description": "axl-firmware edk2-stable200001-r1 for AARCH64 (virt), RELEASE, edk2 edk2-stable200001",
+        "interface-types": [
+          "uefi"
+        ],
+        "mapping": {
+          "device": "flash",
+          "mode": "split",
+          "executable": {
+            "filename": "{prefix}/edk2-stable200001-r1/release/aarch64/code.fd",
+            "format": "raw"
+          },
+          "nvram-template": {
+            "filename": "{prefix}/edk2-stable200001-r1/release/aarch64/vars.fd",
+            "format": "raw"
+          }
+        },
+        "targets": [
+          {
+            "architecture": "aarch64",
+            "machines": [
+              "virt-*"
+            ]
+          }
+        ],
+        "features": [],
+        "tags": [
+          "edk2-stable200001",
+          "0000000000000000000000000000000000000001",
+          "edk2-stable200001-r1",
+          "RELEASE"
+        ]
+      }
+    },
+    "descriptors_removed": "every other 10-axl-firmware-*.json and 20-axl-firmware-*.json in <prefix>/descriptors; other files there, and other releases' directories, kept"
+  },
+  "refused": "the prefix as it was: every path under it and each file's bytes (directory mtimes aside)",
+  "waits": "no change to the prefix while the lock is held; once it is released, installed",
+  "cases": [
+    {
+      "name": "good",
+      "what": "the miniature release, r3's shape: six image sets, four descriptors",
+      "tarball": "cases/good/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/good/SHA256SUMS",
+      "pin": null,
+      "outcome": "installed",
+      "files": {
+        "edk2-stable200001-r1/LICENSES/edk2-License.txt": "9eedb32cdd0cfe1c2795a9c85c81f36a6b083018d1c92dc3c39cc688775e40af",
+        "edk2-stable200001-r1/aarch64/Shell_AARCH64.efi": "a056afb4c745d4d99667bb6ffa14162b78e425ab80edb82b6293b60dff09ec28",
+        "edk2-stable200001-r1/aarch64/code.fd": "c166d775e2b5b19a40ac11cd080ba4944007f30ab804b14429c8fca8d31c1048",
+        "edk2-stable200001-r1/aarch64/vars.fd": "7a63a20750670a1ea337501dacd041112d49c8ef66d78d47134697e767a300bd",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json": "042ab1b99ca54fc8b80c9b04080d6bea6ff19235a4506e011bc53f3b8b2f2721",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json": "959bbd66ab5917116cfc148d64ca7252a05a68f4768a11306fb15cd8f9bc89f4",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": "b9394d272358ef26924a51ec85949634300a3d3cc5c3204801b1d32a33128a9a",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json": "f5a98d7b1ba2a68b61300fabb746259de2b6e3acfb2cd154f4edfec909a8b178",
+        "edk2-stable200001-r1/guarded/aarch64/Shell_AARCH64.efi": "1c254605b8f7acd098cad46b7b9a3ef234355314f342f70611b7c7db483284de",
+        "edk2-stable200001-r1/guarded/aarch64/code.fd": "14a5c2e000488b6c76e1deff66459794da45f865683182d3ead8cba3f7d93a2a",
+        "edk2-stable200001-r1/guarded/aarch64/vars.fd": "caf8439e8e2b441e2633efdbba7d0ed9263f843e69e418cc7455fea53dc0e574",
+        "edk2-stable200001-r1/guarded/x64/Shell_X64.efi": "5f605d95bae13dc5a5efb320f86644ff17f3d220ece55fc65e20e0e062e01533",
+        "edk2-stable200001-r1/guarded/x64/code.fd": "1fd0edb66c0c230dee470a688025262e9b10f7202f7da9b8b1ede2ca38c531ca",
+        "edk2-stable200001-r1/guarded/x64/vars.fd": "ba28405d3b5b5ce6890fbfe6f37d8d274c58ad5fd20749863ff3b7081b85228f",
+        "edk2-stable200001-r1/manifest.json": "bc74ba81de5754f5fcf22d210ea65012857ab153db706275d496586eac519966",
+        "edk2-stable200001-r1/patches/0001-stand-in.patch": "35ec5700934049f4ec9f1dde47d41eadc8379673a57be39642d8bce74324b82f",
+        "edk2-stable200001-r1/release/aarch64/Shell_AARCH64.efi": "a3744d6c35c6a6567985a973c6815c39f4abdc87a183bb897a816111de4720a9",
+        "edk2-stable200001-r1/release/aarch64/code.fd": "4638308678ec230243f4497569be47568171e911623a6ce3748cdd30ae3ce2c5",
+        "edk2-stable200001-r1/release/aarch64/vars.fd": "c979affed0822fd59b22c9ea99913b1d19e5a0b2accaa675bd39e9c04f7abec7",
+        "edk2-stable200001-r1/release/x64/Shell_X64.efi": "108e2f0028d5d038800de0b736c51b56b39fcc1e547f4629b2dda24fc59ecc96",
+        "edk2-stable200001-r1/release/x64/code.fd": "c5091c02ac9c85aecdf80bcc125ca4369fc04689ea808fafb1c97efaa8cc3b96",
+        "edk2-stable200001-r1/release/x64/vars.fd": "91f9b80223cca77e8efac43e34530a5670484d7447486ed56e1cae9600a5c206",
+        "edk2-stable200001-r1/x64/Shell_X64.efi": "f10b5d8f572b2864e3d949c9442ddf8e3c6d856d69860a2697a51134b208bf87",
+        "edk2-stable200001-r1/x64/code.fd": "c2d9b16ee890e7f2a27befb3b1fdbaff82184bf2eb93e7a0e4490796cc777899",
+        "edk2-stable200001-r1/x64/vars.fd": "c0ab1a81a5983595e78e384f4531b7f0cc48f95bf8abf7ac502768d8195efb80"
+      }
+    },
+    {
+      "name": "good-pinned",
+      "what": "the same, its sha256 pinned and no SHA256SUMS",
+      "tarball": "cases/good-pinned/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": null,
+      "pin": "38e8ed8283518a65984ef27800f1bc1b87ec7e9f4c8841326170a272f4e8e2d4",
+      "outcome": "installed",
+      "files": {
+        "edk2-stable200001-r1/LICENSES/edk2-License.txt": "9eedb32cdd0cfe1c2795a9c85c81f36a6b083018d1c92dc3c39cc688775e40af",
+        "edk2-stable200001-r1/aarch64/Shell_AARCH64.efi": "a056afb4c745d4d99667bb6ffa14162b78e425ab80edb82b6293b60dff09ec28",
+        "edk2-stable200001-r1/aarch64/code.fd": "c166d775e2b5b19a40ac11cd080ba4944007f30ab804b14429c8fca8d31c1048",
+        "edk2-stable200001-r1/aarch64/vars.fd": "7a63a20750670a1ea337501dacd041112d49c8ef66d78d47134697e767a300bd",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json": "042ab1b99ca54fc8b80c9b04080d6bea6ff19235a4506e011bc53f3b8b2f2721",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json": "959bbd66ab5917116cfc148d64ca7252a05a68f4768a11306fb15cd8f9bc89f4",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": "b9394d272358ef26924a51ec85949634300a3d3cc5c3204801b1d32a33128a9a",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json": "f5a98d7b1ba2a68b61300fabb746259de2b6e3acfb2cd154f4edfec909a8b178",
+        "edk2-stable200001-r1/guarded/aarch64/Shell_AARCH64.efi": "1c254605b8f7acd098cad46b7b9a3ef234355314f342f70611b7c7db483284de",
+        "edk2-stable200001-r1/guarded/aarch64/code.fd": "14a5c2e000488b6c76e1deff66459794da45f865683182d3ead8cba3f7d93a2a",
+        "edk2-stable200001-r1/guarded/aarch64/vars.fd": "caf8439e8e2b441e2633efdbba7d0ed9263f843e69e418cc7455fea53dc0e574",
+        "edk2-stable200001-r1/guarded/x64/Shell_X64.efi": "5f605d95bae13dc5a5efb320f86644ff17f3d220ece55fc65e20e0e062e01533",
+        "edk2-stable200001-r1/guarded/x64/code.fd": "1fd0edb66c0c230dee470a688025262e9b10f7202f7da9b8b1ede2ca38c531ca",
+        "edk2-stable200001-r1/guarded/x64/vars.fd": "ba28405d3b5b5ce6890fbfe6f37d8d274c58ad5fd20749863ff3b7081b85228f",
+        "edk2-stable200001-r1/manifest.json": "bc74ba81de5754f5fcf22d210ea65012857ab153db706275d496586eac519966",
+        "edk2-stable200001-r1/patches/0001-stand-in.patch": "35ec5700934049f4ec9f1dde47d41eadc8379673a57be39642d8bce74324b82f",
+        "edk2-stable200001-r1/release/aarch64/Shell_AARCH64.efi": "a3744d6c35c6a6567985a973c6815c39f4abdc87a183bb897a816111de4720a9",
+        "edk2-stable200001-r1/release/aarch64/code.fd": "4638308678ec230243f4497569be47568171e911623a6ce3748cdd30ae3ce2c5",
+        "edk2-stable200001-r1/release/aarch64/vars.fd": "c979affed0822fd59b22c9ea99913b1d19e5a0b2accaa675bd39e9c04f7abec7",
+        "edk2-stable200001-r1/release/x64/Shell_X64.efi": "108e2f0028d5d038800de0b736c51b56b39fcc1e547f4629b2dda24fc59ecc96",
+        "edk2-stable200001-r1/release/x64/code.fd": "c5091c02ac9c85aecdf80bcc125ca4369fc04689ea808fafb1c97efaa8cc3b96",
+        "edk2-stable200001-r1/release/x64/vars.fd": "91f9b80223cca77e8efac43e34530a5670484d7447486ed56e1cae9600a5c206",
+        "edk2-stable200001-r1/x64/Shell_X64.efi": "f10b5d8f572b2864e3d949c9442ddf8e3c6d856d69860a2697a51134b208bf87",
+        "edk2-stable200001-r1/x64/code.fd": "c2d9b16ee890e7f2a27befb3b1fdbaff82184bf2eb93e7a0e4490796cc777899",
+        "edk2-stable200001-r1/x64/vars.fd": "c0ab1a81a5983595e78e384f4531b7f0cc48f95bf8abf7ac502768d8195efb80"
+      }
+    },
+    {
+      "name": "good-four-sets",
+      "what": "r2's shape: the four image sets only",
+      "tarball": "cases/good-four-sets/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/good-four-sets/SHA256SUMS",
+      "pin": null,
+      "outcome": "installed",
+      "files": {
+        "edk2-stable200001-r1/LICENSES/edk2-License.txt": "9eedb32cdd0cfe1c2795a9c85c81f36a6b083018d1c92dc3c39cc688775e40af",
+        "edk2-stable200001-r1/aarch64/Shell_AARCH64.efi": "a056afb4c745d4d99667bb6ffa14162b78e425ab80edb82b6293b60dff09ec28",
+        "edk2-stable200001-r1/aarch64/code.fd": "c166d775e2b5b19a40ac11cd080ba4944007f30ab804b14429c8fca8d31c1048",
+        "edk2-stable200001-r1/aarch64/vars.fd": "7a63a20750670a1ea337501dacd041112d49c8ef66d78d47134697e767a300bd",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json": "042ab1b99ca54fc8b80c9b04080d6bea6ff19235a4506e011bc53f3b8b2f2721",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json": "959bbd66ab5917116cfc148d64ca7252a05a68f4768a11306fb15cd8f9bc89f4",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": "b9394d272358ef26924a51ec85949634300a3d3cc5c3204801b1d32a33128a9a",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json": "f5a98d7b1ba2a68b61300fabb746259de2b6e3acfb2cd154f4edfec909a8b178",
+        "edk2-stable200001-r1/manifest.json": "b7c7053651f8375ffe78d913a3ff13b4713bdae389af26e2035c3e8fe43d2e74",
+        "edk2-stable200001-r1/patches/0001-stand-in.patch": "35ec5700934049f4ec9f1dde47d41eadc8379673a57be39642d8bce74324b82f",
+        "edk2-stable200001-r1/release/aarch64/Shell_AARCH64.efi": "a3744d6c35c6a6567985a973c6815c39f4abdc87a183bb897a816111de4720a9",
+        "edk2-stable200001-r1/release/aarch64/code.fd": "4638308678ec230243f4497569be47568171e911623a6ce3748cdd30ae3ce2c5",
+        "edk2-stable200001-r1/release/aarch64/vars.fd": "c979affed0822fd59b22c9ea99913b1d19e5a0b2accaa675bd39e9c04f7abec7",
+        "edk2-stable200001-r1/release/x64/Shell_X64.efi": "108e2f0028d5d038800de0b736c51b56b39fcc1e547f4629b2dda24fc59ecc96",
+        "edk2-stable200001-r1/release/x64/code.fd": "c5091c02ac9c85aecdf80bcc125ca4369fc04689ea808fafb1c97efaa8cc3b96",
+        "edk2-stable200001-r1/release/x64/vars.fd": "91f9b80223cca77e8efac43e34530a5670484d7447486ed56e1cae9600a5c206",
+        "edk2-stable200001-r1/x64/Shell_X64.efi": "f10b5d8f572b2864e3d949c9442ddf8e3c6d856d69860a2697a51134b208bf87",
+        "edk2-stable200001-r1/x64/code.fd": "c2d9b16ee890e7f2a27befb3b1fdbaff82184bf2eb93e7a0e4490796cc777899",
+        "edk2-stable200001-r1/x64/vars.fd": "c0ab1a81a5983595e78e384f4531b7f0cc48f95bf8abf7ac502768d8195efb80"
+      }
+    },
+    {
+      "name": "hostile-modes",
+      "what": "every member setuid and world-writable, owned by 1000:1000 (named)",
+      "tarball": "cases/hostile-modes/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/hostile-modes/SHA256SUMS",
+      "pin": null,
+      "outcome": "installed",
+      "files": {
+        "edk2-stable200001-r1/LICENSES/edk2-License.txt": "9eedb32cdd0cfe1c2795a9c85c81f36a6b083018d1c92dc3c39cc688775e40af",
+        "edk2-stable200001-r1/aarch64/Shell_AARCH64.efi": "a056afb4c745d4d99667bb6ffa14162b78e425ab80edb82b6293b60dff09ec28",
+        "edk2-stable200001-r1/aarch64/code.fd": "c166d775e2b5b19a40ac11cd080ba4944007f30ab804b14429c8fca8d31c1048",
+        "edk2-stable200001-r1/aarch64/vars.fd": "7a63a20750670a1ea337501dacd041112d49c8ef66d78d47134697e767a300bd",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json": "042ab1b99ca54fc8b80c9b04080d6bea6ff19235a4506e011bc53f3b8b2f2721",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json": "959bbd66ab5917116cfc148d64ca7252a05a68f4768a11306fb15cd8f9bc89f4",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": "b9394d272358ef26924a51ec85949634300a3d3cc5c3204801b1d32a33128a9a",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json": "f5a98d7b1ba2a68b61300fabb746259de2b6e3acfb2cd154f4edfec909a8b178",
+        "edk2-stable200001-r1/guarded/aarch64/Shell_AARCH64.efi": "1c254605b8f7acd098cad46b7b9a3ef234355314f342f70611b7c7db483284de",
+        "edk2-stable200001-r1/guarded/aarch64/code.fd": "14a5c2e000488b6c76e1deff66459794da45f865683182d3ead8cba3f7d93a2a",
+        "edk2-stable200001-r1/guarded/aarch64/vars.fd": "caf8439e8e2b441e2633efdbba7d0ed9263f843e69e418cc7455fea53dc0e574",
+        "edk2-stable200001-r1/guarded/x64/Shell_X64.efi": "5f605d95bae13dc5a5efb320f86644ff17f3d220ece55fc65e20e0e062e01533",
+        "edk2-stable200001-r1/guarded/x64/code.fd": "1fd0edb66c0c230dee470a688025262e9b10f7202f7da9b8b1ede2ca38c531ca",
+        "edk2-stable200001-r1/guarded/x64/vars.fd": "ba28405d3b5b5ce6890fbfe6f37d8d274c58ad5fd20749863ff3b7081b85228f",
+        "edk2-stable200001-r1/manifest.json": "bc74ba81de5754f5fcf22d210ea65012857ab153db706275d496586eac519966",
+        "edk2-stable200001-r1/patches/0001-stand-in.patch": "35ec5700934049f4ec9f1dde47d41eadc8379673a57be39642d8bce74324b82f",
+        "edk2-stable200001-r1/release/aarch64/Shell_AARCH64.efi": "a3744d6c35c6a6567985a973c6815c39f4abdc87a183bb897a816111de4720a9",
+        "edk2-stable200001-r1/release/aarch64/code.fd": "4638308678ec230243f4497569be47568171e911623a6ce3748cdd30ae3ce2c5",
+        "edk2-stable200001-r1/release/aarch64/vars.fd": "c979affed0822fd59b22c9ea99913b1d19e5a0b2accaa675bd39e9c04f7abec7",
+        "edk2-stable200001-r1/release/x64/Shell_X64.efi": "108e2f0028d5d038800de0b736c51b56b39fcc1e547f4629b2dda24fc59ecc96",
+        "edk2-stable200001-r1/release/x64/code.fd": "c5091c02ac9c85aecdf80bcc125ca4369fc04689ea808fafb1c97efaa8cc3b96",
+        "edk2-stable200001-r1/release/x64/vars.fd": "91f9b80223cca77e8efac43e34530a5670484d7447486ed56e1cae9600a5c206",
+        "edk2-stable200001-r1/x64/Shell_X64.efi": "f10b5d8f572b2864e3d949c9442ddf8e3c6d856d69860a2697a51134b208bf87",
+        "edk2-stable200001-r1/x64/code.fd": "c2d9b16ee890e7f2a27befb3b1fdbaff82184bf2eb93e7a0e4490796cc777899",
+        "edk2-stable200001-r1/x64/vars.fd": "c0ab1a81a5983595e78e384f4531b7f0cc48f95bf8abf7ac502768d8195efb80"
+      }
+    },
+    {
+      "name": "locked",
+      "what": "the good release, while another install holds <prefix>/.lock",
+      "tarball": "cases/locked/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/locked/SHA256SUMS",
+      "pin": null,
+      "outcome": "waits",
+      "files": {
+        "edk2-stable200001-r1/LICENSES/edk2-License.txt": "9eedb32cdd0cfe1c2795a9c85c81f36a6b083018d1c92dc3c39cc688775e40af",
+        "edk2-stable200001-r1/aarch64/Shell_AARCH64.efi": "a056afb4c745d4d99667bb6ffa14162b78e425ab80edb82b6293b60dff09ec28",
+        "edk2-stable200001-r1/aarch64/code.fd": "c166d775e2b5b19a40ac11cd080ba4944007f30ab804b14429c8fca8d31c1048",
+        "edk2-stable200001-r1/aarch64/vars.fd": "7a63a20750670a1ea337501dacd041112d49c8ef66d78d47134697e767a300bd",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json": "042ab1b99ca54fc8b80c9b04080d6bea6ff19235a4506e011bc53f3b8b2f2721",
+        "edk2-stable200001-r1/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json": "959bbd66ab5917116cfc148d64ca7252a05a68f4768a11306fb15cd8f9bc89f4",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json": "b9394d272358ef26924a51ec85949634300a3d3cc5c3204801b1d32a33128a9a",
+        "edk2-stable200001-r1/descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json": "f5a98d7b1ba2a68b61300fabb746259de2b6e3acfb2cd154f4edfec909a8b178",
+        "edk2-stable200001-r1/guarded/aarch64/Shell_AARCH64.efi": "1c254605b8f7acd098cad46b7b9a3ef234355314f342f70611b7c7db483284de",
+        "edk2-stable200001-r1/guarded/aarch64/code.fd": "14a5c2e000488b6c76e1deff66459794da45f865683182d3ead8cba3f7d93a2a",
+        "edk2-stable200001-r1/guarded/aarch64/vars.fd": "caf8439e8e2b441e2633efdbba7d0ed9263f843e69e418cc7455fea53dc0e574",
+        "edk2-stable200001-r1/guarded/x64/Shell_X64.efi": "5f605d95bae13dc5a5efb320f86644ff17f3d220ece55fc65e20e0e062e01533",
+        "edk2-stable200001-r1/guarded/x64/code.fd": "1fd0edb66c0c230dee470a688025262e9b10f7202f7da9b8b1ede2ca38c531ca",
+        "edk2-stable200001-r1/guarded/x64/vars.fd": "ba28405d3b5b5ce6890fbfe6f37d8d274c58ad5fd20749863ff3b7081b85228f",
+        "edk2-stable200001-r1/manifest.json": "bc74ba81de5754f5fcf22d210ea65012857ab153db706275d496586eac519966",
+        "edk2-stable200001-r1/patches/0001-stand-in.patch": "35ec5700934049f4ec9f1dde47d41eadc8379673a57be39642d8bce74324b82f",
+        "edk2-stable200001-r1/release/aarch64/Shell_AARCH64.efi": "a3744d6c35c6a6567985a973c6815c39f4abdc87a183bb897a816111de4720a9",
+        "edk2-stable200001-r1/release/aarch64/code.fd": "4638308678ec230243f4497569be47568171e911623a6ce3748cdd30ae3ce2c5",
+        "edk2-stable200001-r1/release/aarch64/vars.fd": "c979affed0822fd59b22c9ea99913b1d19e5a0b2accaa675bd39e9c04f7abec7",
+        "edk2-stable200001-r1/release/x64/Shell_X64.efi": "108e2f0028d5d038800de0b736c51b56b39fcc1e547f4629b2dda24fc59ecc96",
+        "edk2-stable200001-r1/release/x64/code.fd": "c5091c02ac9c85aecdf80bcc125ca4369fc04689ea808fafb1c97efaa8cc3b96",
+        "edk2-stable200001-r1/release/x64/vars.fd": "91f9b80223cca77e8efac43e34530a5670484d7447486ed56e1cae9600a5c206",
+        "edk2-stable200001-r1/x64/Shell_X64.efi": "f10b5d8f572b2864e3d949c9442ddf8e3c6d856d69860a2697a51134b208bf87",
+        "edk2-stable200001-r1/x64/code.fd": "c2d9b16ee890e7f2a27befb3b1fdbaff82184bf2eb93e7a0e4490796cc777899",
+        "edk2-stable200001-r1/x64/vars.fd": "c0ab1a81a5983595e78e384f4531b7f0cc48f95bf8abf7ac502768d8195efb80"
+      }
+    },
+    {
+      "name": "sha256-mismatch",
+      "what": "SHA256SUMS lists another digest for the tarball",
+      "tarball": "cases/sha256-mismatch/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/sha256-mismatch/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "digest",
+      "reason": "digest",
+      "message": "{tarball}: sha256 38e8ed8283518a65984ef27800f1bc1b87ec7e9f4c8841326170a272f4e8e2d4, expected e529f90be37e0034f48dd69e7c654cb4f0273d2347fb6f783c3680943ff5fad9"
+    },
+    {
+      "name": "pin-mismatch",
+      "what": "a pinned sha256 that is not the tarball's",
+      "tarball": "cases/pin-mismatch/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": null,
+      "pin": "0000000000000000000000000000000000000000000000000000000000000000",
+      "outcome": "refused",
+      "stage": "digest",
+      "reason": "digest",
+      "message": "{tarball}: sha256 38e8ed8283518a65984ef27800f1bc1b87ec7e9f4c8841326170a272f4e8e2d4, expected 0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "sums-without-asset",
+      "what": "SHA256SUMS that does not list the tarball",
+      "tarball": "cases/sums-without-asset/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/sums-without-asset/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "digest",
+      "reason": "digest",
+      "message": "{tarball_dir}/SHA256SUMS does not list axl-firmware-edk2-stable200001-r1.tar.xz"
+    },
+    {
+      "name": "no-sums",
+      "what": "no SHA256SUMS and no pin",
+      "tarball": "cases/no-sums/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": null,
+      "pin": null,
+      "outcome": "refused",
+      "stage": "digest",
+      "reason": "digest",
+      "message": "{tarball}: no SHA256SUMS beside it; give its sha256 with --sha256"
+    },
+    {
+      "name": "truncated-xz",
+      "what": "the tarball cut in half, SHA256SUMS of the cut file",
+      "tarball": "cases/truncated-xz/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/truncated-xz/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "corrupt",
+      "message": "{tarball}: not a complete xz-compressed tar: Compressed file ended before the end-of-stream marker was reached"
+    },
+    {
+      "name": "not-xz",
+      "what": "an uncompressed tar named .tar.xz",
+      "tarball": "cases/not-xz/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/not-xz/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "corrupt",
+      "message": "{tarball}: not a complete xz-compressed tar: not an lzma file"
+    },
+    {
+      "name": "bad-asset-name",
+      "what": "a tarball not named axl-firmware-<release>.tar.xz",
+      "tarball": "cases/bad-asset-name/axl-firmware-latest.tar.xz",
+      "sha256sums": "cases/bad-asset-name/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "digest",
+      "reason": "name",
+      "message": "{tarball}: not named axl-firmware-<release>.tar.xz, with a release edk2-stableYYYYMM-rN"
+    },
+    {
+      "name": "member-dotdot",
+      "what": "a member ../escape",
+      "tarball": "cases/member-dotdot/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/member-dotdot/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member '../escape'"
+    },
+    {
+      "name": "member-dotdot-inside",
+      "what": "a member under the top directory climbing out of it",
+      "tarball": "cases/member-dotdot-inside/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/member-dotdot-inside/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/../../escape'"
+    },
+    {
+      "name": "member-absolute",
+      "what": "a member /tmp/axl-firmware-escape",
+      "tarball": "cases/member-absolute/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/member-absolute/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member '/tmp/axl-firmware-escape'"
+    },
+    {
+      "name": "member-outside-top",
+      "what": "a member beside the top directory",
+      "tarball": "cases/member-outside-top/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/member-outside-top/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'elsewhere/file'"
+    },
+    {
+      "name": "member-other-top",
+      "what": "every member under another release's top directory... one of them",
+      "tarball": "cases/member-other-top/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/member-other-top/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r2/x64/code.fd'"
+    },
+    {
+      "name": "symlink-escaping",
+      "what": "a symlink in the release to /etc/passwd",
+      "tarball": "cases/symlink-escaping/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/symlink-escaping/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/link'"
+    },
+    {
+      "name": "symlink-inside",
+      "what": "a symlink in the release to a file of its own",
+      "tarball": "cases/symlink-inside/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/symlink-inside/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/link'"
+    },
+    {
+      "name": "hardlink-escaping",
+      "what": "a hard link in the release to ../../etc/passwd",
+      "tarball": "cases/hardlink-escaping/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/hardlink-escaping/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/link'"
+    },
+    {
+      "name": "hardlink-inside",
+      "what": "a hard link in the release to a file of its own",
+      "tarball": "cases/hardlink-inside/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/hardlink-inside/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/link'"
+    },
+    {
+      "name": "char-device",
+      "what": "a character device node",
+      "tarball": "cases/char-device/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/char-device/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/null'"
+    },
+    {
+      "name": "block-device",
+      "what": "a block device node",
+      "tarball": "cases/block-device/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/block-device/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/disk'"
+    },
+    {
+      "name": "fifo",
+      "what": "a FIFO",
+      "tarball": "cases/fifo/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/fifo/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/x64/fifo'"
+    },
+    {
+      "name": "pax-path-dotdot",
+      "what": "a PAX header whose path climbs out (the ustar name is harmless)",
+      "tarball": "cases/pax-path-dotdot/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/pax-path-dotdot/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "member",
+      "message": "{tarball}: unexpected member 'axl-firmware-edk2-stable200001-r1/../../escape'"
+    },
+    {
+      "name": "duplicate-member",
+      "what": "x64/code.fd twice, the second other bytes (the manifest's first)",
+      "tarball": "cases/duplicate-member/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/duplicate-member/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "duplicate",
+      "message": "{tarball}: member 'axl-firmware-edk2-stable200001-r1/x64/code.fd' appears twice"
+    },
+    {
+      "name": "oversize-member",
+      "what": "a member of 134217729 bytes (zeros), over the cap",
+      "tarball": "cases/oversize-member/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/oversize-member/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "oversize",
+      "message": "{tarball}: member 'axl-firmware-edk2-stable200001-r1/x64/big.bin' is 134217729 bytes, over 134217728"
+    },
+    {
+      "name": "too-many-members",
+      "what": "4097 members, empty files, over the count cap",
+      "tarball": "cases/too-many-members/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/too-many-members/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "count",
+      "message": "{tarball}: more than 4096 members"
+    },
+    {
+      "name": "oversize-total",
+      "what": "9 members of 134217728 bytes each (zeros), over the total cap",
+      "tarball": "cases/oversize-total/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/oversize-total/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "members",
+      "reason": "oversize",
+      "message": "{tarball}: its members total more than 1073741824 bytes"
+    },
+    {
+      "name": "format-1",
+      "what": "manifest format 1",
+      "tarball": "cases/format-1/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/format-1/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "format",
+      "message": "{unpacked}: manifest format 1; this install reads format 2"
+    },
+    {
+      "name": "format-3",
+      "what": "manifest format 3",
+      "tarball": "cases/format-3/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/format-3/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "format",
+      "message": "{unpacked}: manifest format 3; this install reads format 2"
+    },
+    {
+      "name": "release-mismatch",
+      "what": "a manifest naming another release than the tarball's",
+      "tarball": "cases/release-mismatch/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/release-mismatch/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "release",
+      "message": "{unpacked}: its manifest names release 'edk2-stable200001-r2', not 'edk2-stable200001-r1'"
+    },
+    {
+      "name": "missing-set",
+      "what": "no release/aarch64 in the manifest",
+      "tarball": "cases/missing-set/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/missing-set/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "set",
+      "message": "{unpacked}: its manifest's images are ['aarch64', 'guarded/aarch64', 'guarded/x64', 'release/x64', 'x64'], without ['release/aarch64']"
+    },
+    {
+      "name": "set-escaping",
+      "what": "an image set ../x64 in the manifest",
+      "tarball": "cases/set-escaping/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/set-escaping/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "set",
+      "message": "{unpacked}: its manifest lists an image set '../x64', not <name>/<x64|aarch64>"
+    },
+    {
+      "name": "set-newline",
+      "what": "an image set 'guarded/x64' with a trailing newline",
+      "tarball": "cases/set-newline/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/set-newline/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "set",
+      "message": "{unpacked}: its manifest lists an image set 'guarded/x64\\n', not <name>/<x64|aarch64>"
+    },
+    {
+      "name": "set-reserved",
+      "what": "an image set symbols/x64, a name the install layout uses",
+      "tarball": "cases/set-reserved/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/set-reserved/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "set",
+      "message": "{unpacked}: its manifest lists an image set 'symbols/x64', a name the release layout reserves"
+    },
+    {
+      "name": "image-moved",
+      "what": "x64's code naming release/x64's file, its size and sha256 true of it",
+      "tarball": "cases/image-moved/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/image-moved/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "image",
+      "message": "{unpacked}: its manifest names 'release/x64/code.fd' for x64's code, not 'x64/code.fd'"
+    },
+    {
+      "name": "image-digest",
+      "what": "aarch64's vars with another sha256 in the manifest",
+      "tarball": "cases/image-digest/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/image-digest/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "image",
+      "message": "{unpacked}/aarch64/vars.fd: not aarch64's vars as its manifest records it"
+    },
+    {
+      "name": "guarded-image-size",
+      "what": "guarded/x64's Shell with another size in the manifest",
+      "tarball": "cases/guarded-image-size/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/guarded-image-size/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "image",
+      "message": "{unpacked}/guarded/x64/Shell_X64.efi: not guarded/x64's shell as its manifest records it"
+    },
+    {
+      "name": "image-missing",
+      "what": "release/x64/vars.fd absent, the manifest listing it",
+      "tarball": "cases/image-missing/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/image-missing/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "image",
+      "message": "{unpacked}/release/x64/vars.fd: not release/x64's vars as its manifest records it"
+    },
+    {
+      "name": "descriptor-outside",
+      "what": "x64's descriptor naming ../../etc/passwd",
+      "tarball": "cases/descriptor-outside/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/descriptor-outside/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "descriptors",
+      "reason": "descriptor",
+      "message": "{unpacked}/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json: its executable is '../../etc/passwd', not 'x64/code.fd'"
+    },
+    {
+      "name": "descriptor-absolute",
+      "what": "x64's descriptor naming /etc/passwd as its vars",
+      "tarball": "cases/descriptor-absolute/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/descriptor-absolute/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "descriptors",
+      "reason": "descriptor",
+      "message": "{unpacked}/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json: its nvram-template is '/etc/passwd', not 'x64/vars.fd'"
+    },
+    {
+      "name": "descriptor-retargeted",
+      "what": "x64's descriptor claiming aarch64",
+      "tarball": "cases/descriptor-retargeted/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/descriptor-retargeted/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "descriptors",
+      "reason": "descriptor",
+      "message": "{unpacked}/descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json: not the descriptor of x64"
+    },
+    {
+      "name": "descriptors-unlisted",
+      "what": "a manifest listing no descriptor",
+      "tarball": "cases/descriptors-unlisted/axl-firmware-edk2-stable200001-r1.tar.xz",
+      "sha256sums": "cases/descriptors-unlisted/SHA256SUMS",
+      "pin": null,
+      "outcome": "refused",
+      "stage": "manifest",
+      "reason": "descriptor",
+      "message": "{unpacked}: its manifest's descriptors are [], not ['descriptors/10-axl-firmware-edk2-stable200001-r1-aarch64.json', 'descriptors/10-axl-firmware-edk2-stable200001-r1-x64.json', 'descriptors/20-axl-firmware-edk2-stable200001-r1-release-aarch64.json', 'descriptors/20-axl-firmware-edk2-stable200001-r1-release-x64.json']"
+    }
+  ]
+}

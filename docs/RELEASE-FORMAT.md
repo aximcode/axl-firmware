@@ -18,6 +18,7 @@ removed, renamed or reshaped without the consumers agreeing first):
 | `images.<dir>.code.path` (matched to the firmware in use), `images.<dir>.shell.{path,sha256}` | axl-sdk's `find_shell_efi` |
 | every `path` relative to the release directory, never escaping it; `manifest.json` at the release directory's top, found from an image within three directories | axl-sdk |
 | the descriptors' file names and numbering (DEBUG `10-`, RELEASE `20-`) | the shared descriptor search (axlvmpool, axl-sdk) |
+| `guarded/x64/`, `guarded/aarch64/` (from r3), each `code.fd`, `vars.fd`, `Shell_<ARCH>.efi`, with **no descriptor**; `images.guarded/<arch>` with `flavour` `GUARDED` | SoftBMC, by path (stable by that commitment, before its first read) |
 
 ## The release
 
@@ -51,6 +52,8 @@ axl-firmware-<release>/
   aarch64/Shell_AARCH64.efi
   release/x64/...             the same three files, RELEASE
   release/aarch64/...         the same three files, RELEASE
+  guarded/x64/...             the same three files, GUARDED (from r3; no descriptor)
+  guarded/aarch64/...         the same three files, GUARDED (from r3; no descriptor)
   descriptors/10-axl-firmware-<release>-x64.json              X64 DEBUG
   descriptors/10-axl-firmware-<release>-aarch64.json          AARCH64 DEBUG
   descriptors/20-axl-firmware-<release>-release-x64.json      X64 RELEASE
@@ -64,13 +67,50 @@ axl-firmware-<release>/
 ```
 
 The DEBUG directories are the bare arch names because DEBUG is the default
-every consumer boots; RELEASE sits apart under `release/`. Each directory holds
+every consumer boots; RELEASE sits apart under `release/`, and GUARDED
+under `guarded/`. Each directory holds
 its code, its vars template and its Shell together, because consumers take the
 firmware's directory as the Shell's (`${firmware_dir}/Shell_<ARCH>.efi`).
 
+## The guarded image (GUARDED, from r3)
+
+`guarded/<arch>` is the DEBUG build with edk2's UEFI heap guard: a write past
+a pool buffer or a page allocation of a driver or application faults at the
+instruction that makes it, where DEBUG and RELEASE corrupt memory silently
+and may fail much later, or only on real hardware. Its build differs from
+DEBUG's only by three FixedAtBuild PCDs (`images.guarded/<arch>.pcds` lists
+them; `debug.heap_guard` states what its DxeMain's AutoGen holds):
+
+| PCD | Value | Meaning |
+|---|---|---|
+| `PcdHeapGuardPropertyMask` | `0x03` | the UEFI page guard (BIT0) and pool guard (BIT1); BIT7 clear, so a pool buffer is placed against its *tail* guard page, and a write one byte past a buffer whose size is a multiple of 8 faults. Not the freed-memory guard (BIT4, use-after-free), which edk2 cannot enable with the pool and page guards; not non-stop mode (BIT6) |
+| `PcdHeapGuardPoolType` | `0x1E` | pool allocations of EfiLoaderCode, EfiLoaderData, EfiBootServicesCode and EfiBootServicesData |
+| `PcdHeapGuardPageType` | `0x1E` | page allocations of the same types |
+
+- **Never picked by a descriptor search.** It has no descriptor, so no
+  search (QEMU's, libvirt's, axlvmpool's or axl-sdk's) can pick it, even when
+  every described image fails a consumer's checks. Select it by path:
+  `guarded/<arch>/code.fd` and `guarded/<arch>/vars.fd` under the release
+  ([CONSUMERS.md](CONSUMERS.md)).
+- **What it does not catch.** An overrun into the slack of a buffer whose
+  size is not a multiple of 8 (the pool's 8-byte alignment) lands before the
+  guard page; a write *before* a buffer (the guard is at the tail);
+  use-after-free; the runtime memory types (EfiRuntimeServicesCode and
+  Data, which AARCH64's 64 KiB runtime granularity cannot guard); SMM (not
+  built). A guarded pool has no pool tail (edk2's `CoreAllocatePoolI` drops
+  it when the buffer sits against its tail guard), so an overrun into the
+  alignment slack of a guarded type is caught by nothing, where on DEBUG it
+  may hit the tail's signature and ASSERT when the buffer is freed.
+- **Its cost**: [PROPERTIES.md](PROPERTIES.md) and DESIGN.md §4.28 give the
+  boot time and memory measured against DEBUG.
+- **Its symbols** are DEBUG's, but for the three modules the PCDs change
+  (DxeCore, DxeIpl and, on X64, CpuDxe): no symbols tarball is published for
+  it.
+
 ## Descriptors
 
-QEMU firmware descriptors (QEMU's `docs/interop/firmware.json`), one per image.
+QEMU firmware descriptors (QEMU's `docs/interop/firmware.json`), one per image
+but GUARDED, which has none.
 In the tarball their file names are **relative to the release directory**; the
 install rewrites them to absolute paths, which QEMU requires. Installed X64 DEBUG
 (prefix `$HOME/.local/share/axl-firmware`, written out):
@@ -132,7 +172,7 @@ Paths are relative to the release directory. Every value below is present.
 | `compilers.x64`, `compilers.aarch64` | string | the compiler and version used |
 | `default_flavour` | string | `DEBUG` |
 | `hardware_images` | {string: string} | from r3: per arch (`x64`, `aarch64`), the directory of the image to ship to real hardware (the Shell and firmware deployed onto physical machines, where a DEBUG build's ASSERT can halt the box): `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Each names one of `images`, of its own arch, whose `flavour` is `RELEASE` (checked: a release whose entry names a missing image, another arch's or one not RELEASE is not packed). `default_flavour` is what QEMU guests boot, and stays `DEBUG` |
-| `images` | object | one entry per image, keyed by its directory: `x64`, `aarch64`, `release/x64`, `release/aarch64` |
+| `images` | object | one entry per image, keyed by its directory: `x64`, `aarch64`, `release/x64`, `release/aarch64`, and from r3 `guarded/x64`, `guarded/aarch64`. An installer requires the first four and checks every entry, each `<name>/<arch>` (or the bare arch): a later release may add another image set |
 | `descriptors` | [string] | the descriptors, `descriptors/<name>` |
 | `symbols.x64`, `symbols.aarch64` | string | the symbols tarballs' asset names |
 | `licenses` | [string] | the licence files, `LICENSES/...`: edk2's, and every file of each third-party part (edk2 submodule) whose sources the build compiled or whose headers it used; a superset of every image's `licenses` |
@@ -142,23 +182,24 @@ Each `images.<dir>`:
 | Field | Type | Meaning |
 |---|---|---|
 | `arch` | string | `x64` or `aarch64` |
-| `flavour` | string | `DEBUG` or `RELEASE` |
+| `flavour` | string | `DEBUG`, `RELEASE` or (from r3) `GUARDED` |
 | `machine` | string | QEMU's machine: `q35`, `virt` |
 | `platform` | string | the DSC: `OvmfPkg/OvmfPkgX64.dsc`, `ArmVirtPkg/ArmVirtQemu.dsc` |
 | `defines` | [string] | the build's `-D` defines |
-| `pcds` | [string] | the build's `--pcd` overrides, as given to `build` |
+| `pcds` | [string] | the build's `--pcd` overrides, as given to `build` (GUARDED's add the heap-guard PCDs) |
 | `code`, `vars`, `shell` | {`path`, `size`, `sha256`} | the three files |
-| `descriptor` | string | its descriptor, `descriptors/<name>` |
+| `descriptor` | string or null | its descriptor, `descriptors/<name>`; null for GUARDED, which has none |
 | `secure_boot` | bool | `false`: no Secure Boot is built in |
-| `debug.target` | string | the build's target, `DEBUG` or `RELEASE` |
+| `debug.target` | string | the build's target, `DEBUG` or `RELEASE` (GUARDED's is `DEBUG`) |
 | `debug.asserts_compiled` | bool | ASSERTs and DEBUG are compiled in (no `MDEPKG_NDEBUG`) |
 | `debug.property_mask` | string or null | `PcdDebugPropertyMask`, hex (`0x2f`); null when the build references none (AARCH64 RELEASE) |
 | `debug.print_error_level` | string or null | `PcdDebugPrintErrorLevel`, hex (`0x8000004f`, `0x80000000`); null as above |
 | `debug.boot_manager_menu` | string | `UiApp` when `PcdBootManagerMenuFile` is UiApp's GUID |
-| `debug.assert` | string | X64 DEBUG only: `deadloop` or `breakpoint` (the mask's 0x20 or 0x10) |
-| `debug.clear_memory` | bool | X64 DEBUG only: the mask's 0x08 (freed memory cleared) |
-| `debug.output` | string | DEBUG only: where the DEBUG output goes |
+| `debug.assert` | string | X64 DEBUG and GUARDED only: `deadloop` or `breakpoint` (the mask's 0x20 or 0x10) |
+| `debug.clear_memory` | bool | X64 DEBUG and GUARDED only: the mask's 0x08 (freed memory cleared) |
+| `debug.output` | string | DEBUG and GUARDED only: where the DEBUG output goes |
 | `debug.descriptor_feature` | string | DEBUG only: `verbose-dynamic` or `verbose-static` |
+| `debug.heap_guard` | {`property_mask`, `pool_type`, `page_type`} | GUARDED only, from r3: `PcdHeapGuardPropertyMask`, `PcdHeapGuardPoolType`, `PcdHeapGuardPageType` as its DxeMain's AutoGen holds them, hex (`0x03`, `0x1e`, `0x1e`) |
 | `verified.by` | string | the walker that read the image |
 | `verified.drivers` | [{`name`, `guid`}] | the FFS files the code image was checked to hold |
 | `verified.absent` | [{`name`, `guid`}] | the FFS files it was checked not to hold |
@@ -208,11 +249,14 @@ Each `images.<dir>.measured`:
 | `gop_std_vga` | {`size`: [w, h], `drawn`: bool} | std-VGA's screen at the Shell (`edid=off`), from a screendump: its size (1280x800 on both arches) and whether any pixel is lit |
 | `bochs_display` | {`devices`, `size`: [w, h], `drawn`: bool} | QemuVideoDxe's device count on `bochs-display`, and its screen at the Shell (`edid=off`, so the firmware's default, 1280x800 on both arches), from a screendump: its size and whether any pixel is lit |
 | `cpu_models_reach_shell` | {model: bool} | AARCH64 only: a boot under each `-cpu` (`max`, `cortex-a57`, `neoverse-v1`) reached the Shell |
+| `pool_overrun` | string | DEBUG and GUARDED only, from r3: what a write one byte past a 64-byte pool buffer did (the guard check's application, run from the Shell): `fault` (GUARDED: the CPU exception, at the write) or `silent` (DEBUG: nothing noticed) |
 
 A consumer checks an installed image as the install does: the manifest parses
-with `format` 2, lists all four image sets, and each set's `code`, `vars` and
-`shell` are at `<dir>/code.fd`, `<dir>/vars.fd` and `<dir>/Shell_<ARCH>.efi`
-with the recorded `size` and `sha256`.
+with `format` 2, lists the four image sets `x64`, `aarch64`, `release/x64` and
+`release/aarch64` (and may list more, each `<name>/<arch>`, the name none of
+`descriptors`, `symbols`, `patches`, `LICENSES`), and each set's
+`code`, `vars` and `shell` are at `<dir>/code.fd`, `<dir>/vars.fd` and
+`<dir>/Shell_<ARCH>.efi` with the recorded `size` and `sha256`.
 
 ## The symbols tarballs
 
@@ -234,16 +278,36 @@ $XDG_DATA_HOME/axl-firmware/            (default $HOME/.local/share/axl-firmware
 One install runs at a time per prefix (a lock on `<prefix>/.lock`). The
 tarballs and `SHA256SUMS` are copied (or downloaded) into a private directory
 beside their place (`<prefix>/.install.*`), and only those copies are read.
-The release is unpacked there and checked: the tarball's sha256, its members
-(regular files and directories under its one top directory), the manifest's
-`format` 2 and `release`, all four image sets, each image file at its set's
-path with its size and sha256, and each descriptor's paths (inside the release,
+The release is unpacked there and checked: the tarball's sha256; its members,
+each as its header is read and before any is written (regular files and
+directories under its one top directory, no `..`, not absolute, each name
+once, none over 128 MiB, all together at most 1 GiB, and at most 4096 of
+them; from r3: a release's largest file is 64 MiB, r3 unpacks to about
+420 MiB in 153 members), each written 0644 (a directory 0755) and owned
+by the user, whatever the tarball says; that it is a
+complete xz-compressed tar; the manifest's `format` 2 and `release`; the four
+image sets, and every other set it lists; each image file at its set's path
+with its size and sha256; and each descriptor's paths (inside the release,
 files present). Only then is it renamed in, an existing directory of the same
 release moved aside; the descriptors are written, each by a temporary file and
 a rename; if that fails, each descriptor written is removed (or, for the same
 release, put back as it was) and the earlier directory is put back. Then every other `10-axl-firmware-*`
 or `20-axl-firmware-*` descriptor there is removed, so only the installed
 release is advertised. Other releases' directories stay.
+
+## The installer conformance fixture
+
+`tests/conformance/` is a miniature release in this layout (stand-in images
+of a few bytes, a format-2 manifest with every field, four descriptors) and
+a set of hostile ones, each with the outcome an installer must give it, in
+`expected.json` (its own `format` 1). `tests/conformance/make-fixture.py`
+(standard library only) generates every file deterministically, and
+`tests/test_conformance.py` holds `install.py` to every case. Another
+installer (axlvmpool's, axl-sdk's) vendors the directory and asserts the same
+outcomes: `installed` (the release's files, by sha256, and its descriptors,
+exactly), `refused` (a stable `reason` and `stage` per case, and install.py's
+own message, with the prefix left as it was) or `waits` (for another
+install's lock on `<prefix>/.lock`). DESIGN.md §4.29.
 
 ## Example
 

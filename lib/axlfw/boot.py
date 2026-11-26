@@ -79,6 +79,10 @@ TICKS = (
 STATE_TIMEOUT = 5.0
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[0-9A-Za-z=>]")
 _PROMPT = re.compile(r"(?:Shell|FS\d+:[^>\n]*)> ")
+# The Shell's prompt, for the other boot checks (guard.py).
+PROMPT = _PROMPT
+# The removable media path the Shell is put at on the boot disk.
+BOOT_FILE = {"x64": "BOOTX64.EFI", "aarch64": "BOOTAA64.EFI"}
 _PPM = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s(.*)\Z", re.DOTALL)
 _MODE = re.compile(r"Col\s+(\d+)\s+Row\s+(\d+)\s+(\*?)")
 
@@ -467,7 +471,7 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
         esp = t / "esp"
         boot = esp / "EFI" / "BOOT"
         boot.mkdir(parents=True)
-        shutil.copyfile(s.shell, boot / ("BOOTX64.EFI" if s.arch == "x64" else "BOOTAA64.EFI"))
+        shutil.copyfile(s.shell, boot / BOOT_FILE[s.arch])
         (esp / TICKS_SCRIPT).write_bytes(TICKS.encode())
         vars_copy = t / "vars.fd"
         shutil.copyfile(s.vars, vars_copy)
@@ -526,7 +530,8 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
         # verbose output (INFO lines, "Loading driver at ...") on the 0x402
         # port; AARCH64's errors only on the second UART (with no TPM
         # attached, Tcg2's "Not Found" errors are always there) and no INFO
-        # line. RELEASE prints nothing on either.
+        # line. RELEASE prints nothing on either. GUARDED is a DEBUG build.
+        debug = s.flavour in ("DEBUG", "GUARDED")
         log, where = (debugcon, "debugcon 0x402") if s.arch == "x64" else (uart1, "the second UART")
         size = log.stat().st_size if log.is_file() else 0
         text = log.read_bytes().decode("latin-1") if size else ""
@@ -534,11 +539,11 @@ def run(s: ImageSet, qemu_dir: Path | None, workdir: Path, timeout: float) -> Re
         result.facts["debug_output"] = {"where": where, "bytes": size, "info_lines": info}
         if s.flavour == "RELEASE" and size:
             result.problems.append(f"{s.arch} RELEASE: {size} bytes of DEBUG output on {where}")
-        elif s.flavour == "DEBUG" and s.arch == "x64" and not info:
-            result.problems.append(f"x64 DEBUG: no verbose DEBUG output on {where} ({size} bytes)")
-        elif s.flavour == "DEBUG" and s.arch == "aarch64" and (not size or info):
+        elif debug and s.arch == "x64" and not info:
+            result.problems.append(f"x64 {s.flavour}: no verbose DEBUG output on {where} ({size} bytes)")
+        elif debug and s.arch == "aarch64" and (not size or info):
             result.problems.append(
-                f"aarch64 DEBUG: {size} bytes on {where}, {info} INFO lines; errors only was expected"
+                f"aarch64 {s.flavour}: {size} bytes on {where}, {info} INFO lines; errors only was expected"
             )
 
         def std_vga(g: Guest) -> None:
