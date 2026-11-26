@@ -37,7 +37,9 @@
 # uefi_firmware wheel), make, gcc, libuuid's headers (libuuid-devel or
 # uuid-dev), nasm, iasl, aarch64-linux-gnu-gcc (or GCC_AARCH64_PREFIX),
 # flock, xz, QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
-# QEMU_DIR or PATH) and swtpm (on PATH) for the boot checks. The build runs at nice 19 with
+# QEMU_DIR or PATH) and swtpm (on PATH) for the boot checks, and virtiofsd
+# for the virtio-fs one (skipped, said, without it; AXLFW_REQUIRE_VIRTIOFS=1
+# makes its absence a failure). The build runs at nice 19 with
 # JOBS jobs (default: the CPUs this process may use, `nproc`; CI sets 4).
 set -euo pipefail
 
@@ -607,6 +609,7 @@ done
     guest_apps=(
         "guard-overrun AxlFwGuardPkg/AxlFwGuardPkg.dsc overrun guard-check"
         "tpm-pcr AxlFwTpmPkg/AxlFwTpmPkg.dsc pcrread TPM-check"
+        "repro ReproPkg/ReproPkg.dsc repro TCP-and-virtio-fs-check"
     )
     for entry in "${guest_apps[@]}"; do
         read -r dir dsc name what <<<"$entry"

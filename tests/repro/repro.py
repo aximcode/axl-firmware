@@ -1,5 +1,7 @@
 """Reproducers of r3's patches 0011 (VirtioFsDxe), 0012 (LocalApic EOI)
 and 0013 (TcpDxe), run by hand against any image (DESIGN §4.30-4.32).
+vfs and tcp are the release's own boot checks (lib/axlfw/netfs.py,
+DESIGN §4.38), run here on one image with the evidence of a failure.
 
     python3 -I tests/repro/repro.py <vfs|tcp|idle> <x64|aarch64> <code.fd> <vars.fd>
         --shell Shell_<ARCH>.efi --apps <dir from build-apps.sh> --out <dir>
@@ -33,7 +35,6 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -41,24 +42,15 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
-from axlfw import boot  # noqa: E402
+from axlfw import boot, netfs  # noqa: E402
 
-BOUND = 60.0
-TCP4_GUID = "65530BC7-A359-410F-B010-5AADC7EC2B62"
-PROMPT = boot._PROMPT  # pyright: ignore[reportPrivateUsage]
+BOUND = netfs.BOUND
 hmp_reply = boot._hmp_reply  # pyright: ignore[reportPrivateUsage]
 
 
 def say(msg: str) -> None:
     """One line of the run's record."""
     print(msg, flush=True)
-
-
-def free_port() -> int:
-    """A free TCP port on the loopback."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 def evidence(g: boot.Guest, out: Path, name: str, arch: str) -> None:
@@ -116,104 +108,30 @@ def run_idle(g: boot.Guest, name: str, seconds: float) -> int:
 
 
 def run_vfs(g: boot.Guest, name: str) -> int:
-    """VfsRace from the share; 0 on PASS."""
-    g.command("connect -r")
-    vol = None
-    for n in range(6):
-        listing = g.command(f"ls fs{n}:\\race.txt")
-        if "race.txt" in listing and "Not Found" not in listing:
-            vol = f"fs{n}:"
-            break
-    if vol is None:
-        say(f"{name}: SETUP no virtio-fs volume holds race.txt")
-        return 2
-    g.send(f"{vol}\r")
-    g.expect(PROMPT, "prompt on the share")
-    start = time.monotonic()
-    g.send("VfsRace.efi\r")
+    """VfsRace from the share, then reconnect -r; 0 on PASS."""
     try:
-        m = g.expect(re.compile(r"vfsrace: (PASS|FAIL|ERROR)[^\r\n]*(?=\r?\n)"), "vfsrace result", BOUND)
-    except boot.BootError:
-        say(f"{name}: RED-HANG no vfsrace result within {BOUND:.0f} s")
+        line, took = netfs.vfs_race(g)
+    except boot.BootError as err:
+        say(f"{name}: RED {str(err).splitlines()[0]}")
         return 1
-    say(f"{name}: {m.group(0)} after {time.monotonic() - start:.1f} s")
-    if m.group(1) != "PASS":
-        return 1
-    # The driver's Stop() and Start() (patch 0011 locks Stop): the share
-    # is disconnected and connected again, and still reads.
-    g.expect(PROMPT, "prompt after VfsRace")
-    g.command("fs0:")
-    if reconnect(g) is None:
-        say(f"{name}: RED-HANG reconnect -r after VfsRace")
-        return 1
-    g.command("map -r")
-    listing = g.command(f"ls {vol}\\race.txt")
-    if "3,000" not in listing:
-        say(f"{name}: after reconnect -r, {vol} does not list race.txt: {listing.strip()!r}")
-        return 1
-    say(f"{name}: after reconnect -r the share lists race.txt again")
+    say(f"{name}: {line} after {took:.1f} s; after reconnect -r the share lists race.txt again")
     return 0
-
-
-def tcphold_sockets(g: boot.Guest) -> list[tuple[str, str]]:
-    """TcpHold's sockets: the TCP4 handles with an IPv4 device path (its
-    listener's is 0.0.0.0, the accepted one's 10.0.2.2). Another driver's
-    TCP4 child, with no device path, is left out."""
-    found: list[tuple[str, str]] = re.findall(
-        r"^\s*([0-9A-F]+): .*IPv4\(([0-9.]+)\)", g.command(f"dh -p {TCP4_GUID}"), re.M
-    )
-    return found
-
-
-def load_tcphold(g: boot.Guest) -> None:
-    """Give the NIC its address and load the server."""
-    g.command("ifconfig -s eth0 static 10.0.2.15 255.255.255.0 10.0.2.2")
-    g.send("load fs0:\\TcpHold.efi\r")
-    m = g.expect(re.compile(r"tcphold: (listening on port 5555|ERROR[^\r\n]*)"), "tcphold listening")
-    g.expect(PROMPT, "prompt after load")
-    if m.group(1).startswith("ERROR"):
-        msg = f"{g.name}: {m.group(0)}"
-        raise boot.BootError(msg)
-
-
-def reconnect(g: boot.Guest) -> float | None:
-    """`reconnect -r`; the seconds it took, or None if it never returned."""
-    start = time.monotonic()
-    g.send("reconnect -r\r")
-    try:
-        g.expect(PROMPT, "prompt after reconnect -r", BOUND)
-    except boot.BootError:
-        return None
-    return time.monotonic() - start
 
 
 def run_tcp(g: boot.Guest, name: str, port: int, server: bool) -> int:
     """reconnect -r with an accepted connection held; 0 on GREEN."""
     if not server:
         g.command("ifconfig -s eth0 static 10.0.2.15 255.255.255.0 10.0.2.2")
-        took = reconnect(g)
+        took = netfs.reconnect(g)
         say(f"{name}: CONTROL reconnect -r with no server: " + ("hung" if took is None else f"{took:.1f} s"))
         return 1 if took is None else 0
-    load_tcphold(g)
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
-        client.sendall(b"hello\n")
-        g.expect(re.compile(r"tcphold: accepted"), "tcphold accepted", 30)
-        g.expect(re.compile(r"tcphold: received 6 bytes"), "tcphold received", 30)
-        before = tcphold_sockets(g)
-        took = reconnect(g)
-        if took is None:
-            say(f"{name}: RED-HANG reconnect -r with an accepted connection held, sockets {before}")
-            return 1
-        after = tcphold_sockets(g)
-    time.sleep(3)
-    load_tcphold(g)
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as again:
-        again.sendall(b"again\n")
-        g.expect(re.compile(r"tcphold: received 6 bytes"), "a connection after the reconnect", 30)
-    ok = len(before) == 2 and not after
-    verdict = "GREEN" if ok else "NOT-GREEN"
-    say(f"{name}: {verdict} reconnect -r {took:.1f} s; sockets {before} before, {after} after; a new server accepted")
-    return 0 if ok else 1
+    try:
+        took, before = netfs.tcp_reconnect(g, port)
+    except boot.BootError as err:
+        say(f"{name}: RED {str(err).splitlines()[0]}")
+        return 1
+    say(f"{name}: GREEN reconnect -r {took:.1f} s; sockets {before} before, none after; a new server accepted")
+    return 0
 
 
 def main() -> int:
@@ -228,8 +146,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--name", default="")
     ap.add_argument("--qemu-dir", type=Path)
-    ap.add_argument("--virtiofsd", default=shutil.which("virtiofsd") or "/usr/libexec/virtiofsd")
-    ap.add_argument("--cpu", default=boot.AARCH64_CPU, help="AARCH64's CPU model")
+    ap.add_argument("--virtiofsd", type=Path, default=netfs.virtiofsd())
+    ap.add_argument("--cpu", help=f"AARCH64's CPU model (tcp: {netfs.TCP_AARCH64_CPU}, else {boot.AARCH64_CPU})")
     ap.add_argument("--no-server", action="store_true")
     ap.add_argument("--seconds", type=float, default=20.0)
     a = ap.parse_args()
@@ -242,45 +160,24 @@ def main() -> int:
     s = boot.ImageSet(arch, "DEBUG", a.code, a.vars, a.shell, "edk2-stable202611")
     with tempfile.TemporaryDirectory(dir=out) as tmp, tempfile.TemporaryDirectory(prefix="axlfw-r-") as socks:
         t = Path(tmp)
-        esp = t / "esp"
-        (esp / "EFI/BOOT").mkdir(parents=True)
-        shutil.copyfile(a.shell, esp / "EFI/BOOT" / ("BOOTX64.EFI" if arch == "x64" else "BOOTAA64.EFI"))
-        shutil.copyfile(apps / "TcpHold.efi", esp / "TcpHold.efi")
-        vars_copy = t / "vars.fd"
-        shutil.copyfile(a.vars, vars_copy)
-        argv = boot.qemu_argv(a.qemu_dir, s, vars_copy, esp, a.cpu)
+        esp, vars_copy = netfs.esp_with(s, t, [apps / netfs.TCP_APP])
         fsd: subprocess.Popen[bytes] | None = None
-        port = free_port()
+        port = netfs.free_port()
         if mode == "vfs":
+            if a.virtiofsd is None:
+                say(f"{name}: SETUP no virtiofsd (--virtiofsd, {netfs.VIRTIOFSD_ENV}, PATH or /usr/libexec)")
+                return 2
             share = t / "share"
             share.mkdir()
-            shutil.copyfile(apps / "VfsRace.efi", share / "VfsRace.efi")
-            (share / "race.txt").write_bytes(bytes((i * 7 + 3) % 251 for i in range(3000)))
+            shutil.copyfile(apps / netfs.VFS_APP, share / netfs.VFS_APP)
+            (share / netfs.RACE_FILE).write_bytes(netfs.RACE_BYTES)
             sock = Path(socks) / "fs.sock"
-            # --cache=never would drop FUSE readdirplus, which VirtioFsDxe needs.
-            fsd = subprocess.Popen(  # noqa: S603 - argv is ours
-                [a.virtiofsd, f"--socket-path={sock}", f"--shared-dir={share}", "--sandbox=none", "--cache=auto"],
-                stdout=subprocess.DEVNULL,
-                stderr=(out / f"{name}.virtiofsd.log").open("wb"),
-            )
-            for _ in range(100):
-                if sock.exists():
-                    break
-                time.sleep(0.05)
-            argv += [
-                "-object", "memory-backend-memfd,id=mem,size=1024M,share=on",
-                "-numa", "node,memdev=mem",
-                "-chardev", f"socket,id=vfs,path={sock}",
-                "-device", "vhost-user-fs-pci,queue-size=1024,chardev=vfs,tag=share",
-            ]  # fmt: skip
+            fsd = netfs.start_virtiofsd(a.virtiofsd, share, sock, out / f"{name}.virtiofsd.log")
+            argv = netfs.vfs_argv(a.qemu_dir, s, vars_copy, esp, sock)
         elif mode == "tcp":
-            # DxeNetLib needs an RNG: cortex-a57 has none (and see DESIGN
-            # §5 item 12 on reconnect -r with only virtio-rng on AARCH64).
-            argv += [
-                "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-:5555",
-                "-device", "virtio-net-pci,netdev=n0,romfile=",
-                "-device", "virtio-rng-pci",
-            ]  # fmt: skip
+            argv = netfs.tcp_argv(a.qemu_dir, s, vars_copy, esp, port, a.cpu or netfs.TCP_AARCH64_CPU)
+        else:
+            argv = boot.qemu_argv(a.qemu_dir, s, vars_copy, esp, a.cpu or boot.AARCH64_CPU)
         if arch == "x64":
             argv += ["-debugcon", f"file:{out / (name + '.debugcon')}", "-global", "isa-debugcon.iobase=0x402"]
         else:
@@ -302,8 +199,7 @@ def main() -> int:
                 evidence(g, out, name, arch)
             g.close()
             if fsd:
-                fsd.terminate()
-                fsd.wait(10)
+                netfs.stop(fsd)
     return rc
 
 

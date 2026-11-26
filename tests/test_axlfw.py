@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, guard, install, isa, licenses, release, tpm, volinfo  # noqa: E402
+from axlfw import boot, checks, fv, guard, install, isa, licenses, netfs, release, tpm, volinfo  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -1128,6 +1128,235 @@ class GuardTests(unittest.TestCase):
                 )
 
 
+# --- The TCP and virtio-fs boot checks (lib/axlfw/netfs.py) -------------
+# A stand-in Shell for reconnect's functions. `load fs0:\TcpHold.efi` listens
+# on the port given, accepts one connection and reads 6 bytes, as TcpHold
+# says; `dh -p` lists its two sockets while one is held. `reconnect -r`
+# drops them and gives the prompt back, or, "hangs", never does; "lingers"
+# keeps a socket. fs1: holds race.txt; VfsRace.efi passes, or "vfs-fail"
+# fails, or "vfs-hangs" says nothing; "vfs-lost" loses the share after a
+# reconnect; "no-share" has none.
+_FAKE_NETFS = r"""
+import os, socket, sys, threading
+mode, port = sys.argv[1], int(sys.argv[2])
+lock = threading.Lock()
+held = []
+vol = ["Shell"]
+lost = [False]
+def out(s):
+    with lock:
+        os.write(1, s.encode())
+def prompt():
+    out(vol[0] + "> ")
+def serve(srv):
+    c, _ = srv.accept()
+    held.append(c)
+    out("tcphold: accepted\r\n")
+    data = b""
+    while len(data) < 6:
+        data += c.recv(6 - len(data))
+    out(f"tcphold: received {len(data)} bytes\r\n")
+prompt()
+line = b""
+while (c := os.read(0, 1)):
+    if c != b"\r":
+        out(c.decode())
+        line += c
+        continue
+    out("\r\n")
+    cmd, line = line.decode(), b""
+    if cmd == "load fs0:\\TcpHold.efi":
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", port))
+        srv.listen(1)
+        held.clear()
+        held.append(srv)
+        threading.Thread(target=serve, args=(srv,), daemon=True).start()
+        out("tcphold: listening on port 5555\r\n")
+    elif cmd.startswith("dh -p "):
+        for n, h in enumerate(held):
+            out(f"  {0xA1 + n:X}: TCPv4 PciRoot(0x0)/Pci(0x3,0x0)/MAC(525400123456,0x1)/IPv4({'0.0.0.0' if n == 0 else '10.0.2.2'})\r\n")
+    elif cmd == "reconnect -r":
+        if mode == "hangs":
+            continue
+        for h in held[1 if mode == "lingers" else 0:]:
+            h.close()
+        del held[1 if mode == "lingers" else 0:]
+        lost[0] = mode == "vfs-lost"
+    elif cmd.startswith("ls fs"):
+        if cmd == "ls fs1:\\race.txt" and mode != "no-share" and not lost[0]:
+            out("11/26/2026  01:00              3,000  race.txt\r\n")
+        else:
+            out("ls: File Not Found - 'x'\r\n")
+    elif cmd in ("fs0:", "fs1:"):
+        vol[0] = "FS" + cmd[2] + ":\\"
+    elif cmd == "VfsRace.efi":
+        if mode == "vfs-hangs":
+            continue
+        out("vfsrace: FAIL read 3 differs\r\n" if mode == "vfs-fail" else "vfsrace: PASS cb=1000 fg=5615\r\n")
+    prompt()
+"""
+
+
+class NetFsTests(unittest.TestCase):
+    """The TCP and virtio-fs boot checks' functions, on a stand-in Shell."""
+
+    def guest(self, t: str, mode: str, port: int = 0) -> boot.Guest:
+        g = boot.Guest([sys.executable, "-c", _FAKE_NETFS, mode, str(port)], Path(t), Path(t), "fake", 5)
+        self.addCleanup(g.close)
+        g.prompt()
+        return g
+
+    def test_tcp_returns(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            port = netfs.free_port()
+            took, before = netfs.tcp_reconnect(self.guest(t, "returns", port), port, bound=2)
+            self.assertEqual(before, [("A1", "0.0.0.0"), ("A2", "10.0.2.2")])
+            self.assertLess(took, 2)
+
+    def test_tcp_hangs(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            port = netfs.free_port()
+            with self.assertRaises(boot.BootError) as cm:
+                netfs.tcp_reconnect(self.guest(t, "hangs", port), port, bound=1)
+            self.assertEqual(
+                str(cm.exception),
+                "fake: reconnect -r did not return within 1 s while TcpHold held an accepted connection"
+                " (sockets [('A1', '0.0.0.0'), ('A2', '10.0.2.2')])",
+            )
+
+    def test_tcp_socket_lingers(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            port = netfs.free_port()
+            with self.assertRaises(boot.BootError) as cm:
+                netfs.tcp_reconnect(self.guest(t, "lingers", port), port, bound=2)
+            self.assertEqual(
+                str(cm.exception), "fake: TcpHold's sockets after reconnect -r are [('A1', '0.0.0.0')], not none"
+            )
+
+    def test_sockets_parsed(self) -> None:
+        dh = (
+            "Handle dump by protocol 'TCPv4'\r\n"
+            "  A1: TCPv4 PciRoot(0x0)/Pci(0x3,0x0)/MAC(525400123456,0x1)/IPv4(0.0.0.0)\r\n"
+            "  B7: TCPv4 \r\n"
+            "  C2: TCPv4 PciRoot(0x0)/Pci(0x3,0x0)/MAC(525400123456,0x1)/IPv4(10.0.2.2)\r\n"
+        )
+        self.assertEqual(netfs.tcphold_sockets(dh), [("A1", "0.0.0.0"), ("C2", "10.0.2.2")])
+
+    def test_vfs_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            line, took = netfs.vfs_race(self.guest(t, "vfs"), bound=2)
+            self.assertEqual(line, "vfsrace: PASS cb=1000 fg=5615")
+            self.assertLess(took, 2)
+
+    def test_vfs_fails(self) -> None:
+        for mode, want in (
+            ("vfs-fail", "fake: vfsrace: FAIL read 3 differs"),
+            ("no-share", "fake: no virtio-fs volume holds race.txt"),
+            ("vfs-lost", "fake: after reconnect -r, fs1: does not list race.txt: \"ls: File Not Found - 'x'\""),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as t:
+                with self.assertRaises(boot.BootError) as cm:
+                    netfs.vfs_race(self.guest(t, mode), bound=2)
+                self.assertEqual(str(cm.exception), want)
+
+    def test_vfs_hangs(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            with self.assertRaises(boot.BootError) as cm:
+                netfs.vfs_race(self.guest(t, "vfs-hangs"), bound=1)
+            self.assertEqual(str(cm.exception).split("\n")[0], "fake: no VfsRace.efi's result within 1 s; console ends:")
+
+    def test_app_paths(self) -> None:
+        self.assertEqual(
+            (netfs.tcp_app(Path("/w"), "GCC", "x64"), netfs.vfs_app(Path("/w"), "GCC", "aarch64")),
+            (Path("/w/Build/Repro/DEBUG_GCC/X64/TcpHold.efi"), Path("/w/Build/Repro/DEBUG_GCC/AARCH64/VfsRace.efi")),
+        )
+
+    def test_virtiofsd_found(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            fsd = Path(t) / "virtiofsd"
+            fsd.write_text("#!/bin/sh\n")
+            fsd.chmod(0o755)
+            with mock.patch.dict(os.environ, {"AXLFW_VIRTIOFSD": str(fsd)}):
+                self.assertEqual(netfs.virtiofsd(), fsd)
+            with mock.patch.dict(os.environ, {"AXLFW_VIRTIOFSD": ""}), mock.patch.object(
+                netfs.shutil, "which", return_value=str(fsd)
+            ):
+                self.assertEqual(netfs.virtiofsd(), fsd)
+            with mock.patch.dict(os.environ, {"AXLFW_VIRTIOFSD": ""}), mock.patch.object(
+                netfs.shutil, "which", return_value=None
+            ), mock.patch.object(netfs.os, "access", return_value=False):
+                self.assertIsNone(netfs.virtiofsd())
+            fsd.chmod(0o644)
+            self.assertEqual(netfs.virtiofsd_problems(fsd), [f"{fsd}: virtiofsd is not an executable file"])
+
+    def boot_checks(self, t: Path, env: dict[str, str], fsd: Path | None) -> tuple[dict[str, dict[str, object]], list[str], str]:
+        apps = {name: {arch: t / name for arch in checks.ARCHES} for name in (netfs.TCP_APP, netfs.VFS_APP)}
+        for per in apps.values():
+            for p in per.values():
+                p.write_bytes(b"x")
+        err = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"),
+            mock.patch.object(netfs, "virtiofsd", return_value=fsd),
+            mock.patch.object(boot, "run", side_effect=lambda *_a: boot.Result()),  # pyright: ignore[reportUnknownLambdaType]
+            mock.patch.object(tpm, "check", side_effect=lambda *_a: boot.Result()),  # pyright: ignore[reportUnknownLambdaType]
+            mock.patch.object(netfs, "check_tcp", return_value=boot.Result(facts={"tcp_reconnect": True})) as tcp,
+            mock.patch.object(netfs, "check_vfs", return_value=boot.Result(facts={"vfs_race": "pass"})) as vfs,
+            contextlib.redirect_stderr(err),
+        ):
+            facts, problems = release.boot_checks(t, "tag", None, t / "logs", apps)
+        self.assertEqual(
+            sorted((c.args[0].arch, c.args[0].flavour) for c in tcp.call_args_list),
+            [("aarch64", "DEBUG"), ("aarch64", "RELEASE"), ("x64", "DEBUG"), ("x64", "RELEASE")],
+        )
+        self.assertEqual(vfs.call_count, 0 if fsd is None else 4)
+        return facts, problems, err.getvalue()
+
+    def test_boot_checks_run_on_debug_and_release(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            facts, problems, err = self.boot_checks(Path(t), {"AXLFW_REQUIRE_VIRTIOFS": ""}, Path(sys.executable))
+            self.assertEqual((problems, err), ([], ""))
+            self.assertEqual(
+                {d: f for d, f in facts.items() if f},
+                {d: {"tcp_reconnect": True, "vfs_race": "pass"} for d in ("x64", "aarch64", "release/x64", "release/aarch64")},
+            )
+
+    def test_boot_checks_skip_without_virtiofsd(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            facts, problems, err = self.boot_checks(Path(t), {"AXLFW_REQUIRE_VIRTIOFS": ""}, None)
+            self.assertEqual(problems, [])
+            self.assertEqual(
+                err,
+                "SKIP: the virtio-fs boot check (patch 0011): no virtiofsd (AXLFW_VIRTIOFSD, PATH or"
+                " /usr/libexec/virtiofsd); AXLFW_REQUIRE_VIRTIOFS=1 makes this a failure\n",
+            )
+            self.assertEqual(facts["release/aarch64"], {"tcp_reconnect": True, "vfs_race": "skipped"})
+            self.assertEqual(facts["guarded/x64"], {})
+
+    def test_boot_checks_require_virtiofsd(self) -> None:
+        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"AXLFW_REQUIRE_VIRTIOFS": "1"}), \
+                mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"), \
+                mock.patch.object(netfs, "virtiofsd", return_value=None):
+            apps = {netfs.VFS_APP: {"x64": Path(t) / "VfsRace.efi"}}
+            apps[netfs.VFS_APP]["x64"].write_bytes(b"x")
+            self.assertEqual(
+                release.boot_checks(Path(t), "tag", None, Path(t) / "logs", apps),
+                (
+                    {},
+                    [
+                        "virtiofsd not found (AXLFW_VIRTIOFSD, PATH or /usr/libexec/virtiofsd):"
+                        " AXLFW_REQUIRE_VIRTIOFS=1 requires the virtio-fs boot check"
+                    ],
+                ),
+            )
+
+
+# --- end of the TCP and virtio-fs boot checks --------------------------------
+
+
 class BootChecksTests(unittest.TestCase):
     """The boot checks refuse a bad setting or a missing QEMU, said."""
 
@@ -1204,6 +1433,14 @@ class BootChecksTests(unittest.TestCase):
                 "PcrRead.efi": {
                     "x64": w / "AxlFwTpm/DEBUG_GCC/X64/PcrRead.efi",
                     "aarch64": w / "AxlFwTpm/DEBUG_GCC/AARCH64/PcrRead.efi",
+                },
+                "TcpHold.efi": {
+                    "x64": w / "Repro/DEBUG_GCC/X64/TcpHold.efi",
+                    "aarch64": w / "Repro/DEBUG_GCC/AARCH64/TcpHold.efi",
+                },
+                "VfsRace.efi": {
+                    "x64": w / "Repro/DEBUG_GCC/X64/VfsRace.efi",
+                    "aarch64": w / "Repro/DEBUG_GCC/AARCH64/VfsRace.efi",
                 },
             },
         )

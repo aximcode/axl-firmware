@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, fv, guard, install, isa, tpm, volinfo, licenses as lic_mod
+from axlfw import boot, checks, fv, guard, install, isa, netfs, tpm, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -389,6 +389,8 @@ def _setting(name: str, default: str, kind: type[int] | type[float], what: str) 
 APPS: dict[str, tuple[str, Callable[[Path, str, str], Path]]] = {
     guard.APP: ("the guard check", guard.app),
     tpm.APP: ("the TPM check", tpm.app),
+    netfs.TCP_APP: ("the TCP reconnect check", netfs.tcp_app),
+    netfs.VFS_APP: ("the virtio-fs check", netfs.vfs_app),
 }
 
 
@@ -406,7 +408,11 @@ def boot_checks(
     applications (guest_apps: name, then arch), as the build has them;
     `build.sh check`, on a packed release, has none. With guard.APP, each
     DEBUG and GUARDED set also runs guard.check; with tpm.APP, the TPM boot
-    also reads the PCRs. A bad setting, a QEMU or swtpm not found, or an
+    also reads the PCRs; with netfs.TCP_APP and VFS_APP, each DEBUG and
+    RELEASE set also runs netfs.check_tcp and, where virtiofsd is found
+    (netfs.virtiofsd), netfs.check_vfs: without one, the virtio-fs
+    check is skipped, said on stderr, unless AXLFW_REQUIRE_VIRTIOFS=1 makes
+    that a problem. A bad setting, a QEMU or swtpm not found, or an
     application missing is a problem before any boot.
     """
     jobs = _setting("AXLFW_BOOT_JOBS", "2", int, "whole number")
@@ -417,16 +423,26 @@ def boot_checks(
     problems += [
         f"{p}: no {name} for {APPS[name][0]}" for name, per in (apps or {}).items() for p in per.values() if not p.is_file()
     ]
+    given = apps or {}
+    fsd = netfs.virtiofsd() if netfs.VFS_APP in given else None
+    if netfs.VFS_APP in given:
+        problems += netfs.virtiofsd_problems(fsd)
     if problems:
         return {}, problems
     assert not isinstance(jobs, str) and not isinstance(timeout, str)  # noqa: S101 - refused above
+    if netfs.VFS_APP in given and fsd is None:
+        print(
+            f"SKIP: the virtio-fs boot check (patch 0011): no virtiofsd ({netfs.VIRTIOFSD_ENV}, PATH or"
+            f" /usr/libexec/virtiofsd); {netfs.REQUIRE_ENV}=1 makes this a failure",
+            file=sys.stderr,
+            flush=True,
+        )
     facts: dict[str, dict[str, object]] = {}
 
     def one(img: Image) -> boot.Result:
         d = root / img.dir
         s = boot.ImageSet(img.arch, img.flavour, d / "code.fd", d / "vars.fd", d / img.shell, tag)
         r = boot.run(s, qemu_dir, logs, timeout)
-        given = apps or {}
         if guard.APP in given and img.flavour in guard.FLAVOURS:
             g = guard.check(s, given[guard.APP][img.arch], qemu_dir, logs, timeout)
             r.facts.update(g.facts)
@@ -434,6 +450,17 @@ def boot_checks(
         t = tpm.check(s, given.get(tpm.APP, {}).get(img.arch), qemu_dir, logs, timeout)
         r.facts.update(t.facts)
         r.problems += t.problems
+        if img.flavour in netfs.FLAVOURS and netfs.TCP_APP in given:
+            n = netfs.check_tcp(s, given[netfs.TCP_APP][img.arch], qemu_dir, logs, timeout)
+            r.facts.update(n.facts)
+            r.problems += n.problems
+        if img.flavour in netfs.FLAVOURS and netfs.VFS_APP in given:
+            if fsd is None:
+                r.facts["vfs_race"] = "skipped"
+            else:
+                v = netfs.check_vfs(s, given[netfs.VFS_APP][img.arch], fsd, qemu_dir, logs, timeout)
+                r.facts.update(v.facts)
+                r.problems += v.problems
         return r
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=int(jobs)) as pool:
