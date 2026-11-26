@@ -15,6 +15,7 @@ against its source.
 | an AArch64 cross gcc | `gcc-aarch64-linux-gnu` | `gcc-aarch64-linux-gnu` |
 | python3 3.9+ with venv (3.10+ for uefi_firmware's prebuilt wheel) | `python3` | `python3 python3-venv` |
 | QEMU, for the boot checks | `qemu-system-x86 qemu-system-aarch64`, or a source build | `qemu-system-x86 qemu-system-arm` |
+| swtpm, for the TPM boot check | `swtpm` | `swtpm` |
 
 `build.sh` checks each before it starts. `GCC_AARCH64_PREFIX` names another
 cross prefix; `QEMU_DIR` names a directory holding `qemu-system-x86_64` and
@@ -131,9 +132,10 @@ what was found.
    define of QEMU's flags still referenced; `OUTPUT_DIRECTORY`; the
    `PcdDebugPropertyMask` and `PcdDebugPrintErrorLevel` values; whether
    upstream now has anything a patch adds. Record each finding in DESIGN.md.
-3. **Re-check, then rebase, each patch** (all five: 0001 pointer drivers,
+3. **Re-check, then rebase, each patch** (each: 0001 pointer drivers,
    0002 bochs-display video, 0003 the debug UART's PEI mapping, 0004
-   TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu). First check whether upstream has fixed or
+   TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu, 0014 the
+   TPM's PEI mapping). First check whether upstream has fixed or
    added what it does by the new tag; if so, drop the patch (or the part),
    and say so in CHANGELOG.md and DESIGN.md. For 0004, read
    `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and

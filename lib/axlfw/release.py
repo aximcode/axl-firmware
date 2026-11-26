@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, fv, install, isa, volinfo, licenses as lic_mod
+from axlfw import boot, checks, fv, install, isa, tpm, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -361,16 +361,22 @@ def _setting(name: str, default: str, kind: type[int] | type[float], what: str) 
 
 
 def boot_checks(
-    root: Path, tag: str, qemu_dir: Path | None, logs: Path
+    root: Path, tag: str, qemu_dir: Path | None, logs: Path, pcr_apps: dict[str, Path] | None = None
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """Every image set's boot checks, AXLFW_BOOT_JOBS (default 2) at a time.
 
-    A bad setting, or a QEMU not found, is a problem before any boot.
+    Each set also boots with a TPM (tpm.check); pcr_apps, per arch, the TPM
+    check's application (tpm.app): with it, that boot also reads the PCRs
+    (the build has it; `build.sh check`, on a packed release, does not). A
+    bad setting, a QEMU or swtpm not found, or an application missing is a
+    problem before any boot.
     """
     jobs = _setting("AXLFW_BOOT_JOBS", "2", int, "whole number")
     timeout = _setting("AXLFW_BOOT_TIMEOUT", "180", float, "number of seconds")
     problems = [x for x in (jobs, timeout) if isinstance(x, str)]
     problems += boot.missing_qemu(qemu_dir, checks.ARCHES)
+    problems += tpm.missing_swtpm()
+    problems += [f"{p}: no {tpm.APP} for the TPM check" for p in (pcr_apps or {}).values() if not p.is_file()]
     if problems:
         return {}, problems
     assert not isinstance(jobs, str) and not isinstance(timeout, str)  # noqa: S101 - refused above
@@ -379,7 +385,11 @@ def boot_checks(
     def one(img: Image) -> boot.Result:
         d = root / img.dir
         s = boot.ImageSet(img.arch, img.flavour, d / "code.fd", d / "vars.fd", d / img.shell, tag)
-        return boot.run(s, qemu_dir, logs, timeout)
+        r = boot.run(s, qemu_dir, logs, timeout)
+        t = tpm.check(s, (pcr_apps or {}).get(img.arch), qemu_dir, logs, timeout)
+        r.facts.update(t.facts)
+        r.problems += t.problems
+        return r
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=int(jobs)) as pool:
         results = list(pool.map(one, IMAGES))
@@ -443,7 +453,8 @@ def assemble(a: AssembleArgs) -> int:
             f" {c['without_code']} without compiled code)",
             flush=True,
         )
-    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs")
+    pcr_apps = {arch: tpm.app(a.ws, a.toolchain, arch) for arch in checks.ARCHES}
+    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs", pcr_apps)
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         if measured:

@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from typing import cast  # noqa: E402
 
-from axlfw import boot, checks, fv, install, isa, licenses, release, volinfo  # noqa: E402
+from axlfw import boot, checks, fv, install, isa, licenses, release, tpm, volinfo  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FS = "7BD9DDF7-8B83-488E-AEC9-24C78610289C"
@@ -559,24 +559,224 @@ class BootChecksTests(unittest.TestCase):
     def test_no_qemu(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             empty = Path(t)
-            self.assertEqual(
-                release.boot_checks(empty, "tag", empty, empty / "logs"),
-                (
-                    {},
-                    [
-                        f"{empty}: no executable qemu-system-x86_64 (QEMU_DIR, or --qemu-dir)",
-                        f"{empty}: no executable qemu-system-aarch64 (QEMU_DIR, or --qemu-dir)",
-                    ],
-                ),
-            )
+            with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/swtpm"):
+                self.assertEqual(
+                    release.boot_checks(empty, "tag", empty, empty / "logs"),
+                    (
+                        {},
+                        [
+                            f"{empty}: no executable qemu-system-x86_64 (QEMU_DIR, or --qemu-dir)",
+                            f"{empty}: no executable qemu-system-aarch64 (QEMU_DIR, or --qemu-dir)",
+                        ],
+                    ),
+                )
             with mock.patch.object(boot.shutil, "which", return_value=None):
                 self.assertEqual(
                     release.boot_checks(empty, "tag", None, empty / "logs")[1],
                     [
                         "qemu-system-x86_64 not found on PATH (or set QEMU_DIR)",
                         "qemu-system-aarch64 not found on PATH (or set QEMU_DIR)",
+                        "swtpm not found on PATH: the TPM boot check needs it",
                     ],
                 )
+
+    def test_no_swtpm(self) -> None:
+        def which(name: str) -> str | None:
+            return None if name == "swtpm" else f"/usr/bin/{name}"
+
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(boot.shutil, "which", side_effect=which):
+            self.assertEqual(
+                release.boot_checks(Path(t), "tag", None, Path(t) / "logs"),
+                ({}, ["swtpm not found on PATH: the TPM boot check needs it"]),
+            )
+
+    def test_no_pcr_app(self) -> None:
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(boot.shutil, "which", return_value="/usr/bin/x"):
+            apps = {arch: tpm.app(Path(t), "GCC", arch) for arch in checks.ARCHES}
+            self.assertEqual(
+                release.boot_checks(Path(t), "tag", None, Path(t) / "logs", apps),
+                (
+                    {},
+                    [
+                        f"{t}/Build/AxlFwTpm/DEBUG_GCC/X64/PcrRead.efi: no PcrRead.efi for the TPM check",
+                        f"{t}/Build/AxlFwTpm/DEBUG_GCC/AARCH64/PcrRead.efi: no PcrRead.efi for the TPM check",
+                    ],
+                ),
+            )
+
+
+_SEPARATOR = hashlib.sha256(bytes(32) + hashlib.sha256(bytes(4)).digest()).hexdigest()
+_PCR0 = "2acee488578adc6a12e187dfb51f541eb7eea2699084716bb498bc273ce5404a"
+
+
+def _pcr_output(pcrs: dict[int, str] | None = None, done: bool = True) -> str:
+    """PcrRead.efi's output, as the Shell prints it (CRLF, PrintLib's upper-case hex), for pcrs."""
+    values = pcrs if pcrs is not None else {n: (_PCR0 if n == 0 else _SEPARATOR) for n in range(8)}
+    lines = [f"axlfw-pcr: sha256 PCR{n} {v.upper()}" for n, v in values.items()]
+    return "".join(f"{x}\r\n" for x in [*lines, *(["axlfw-pcr: done"] if done else [])])
+
+
+# A stand-in for QEMU with a TPM: it connects to the TPM's chardev socket
+# (as QEMU connects to swtpm's control socket), writes its argv to
+# $AXLFW_FAKE_ARGV, and runs a stand-in Shell whose PcrRead.efi prints
+# $AXLFW_FAKE_PCRS; in mode "fault" it stops after the banner.
+_FAKE_TPM_QEMU = r"""
+import json, os, socket, sys, time
+argv = sys.argv[1:]
+open(os.environ["AXLFW_FAKE_ARGV"], "w").write(json.dumps(argv))
+chardev = argv[argv.index("-chardev", argv.index("-chardev") + 1) + 1]
+path = dict(kv.split("=", 1) for kv in chardev.split(",")[1:])["path"]
+tpm = socket.socket(socket.AF_UNIX)
+tpm.connect(path)
+if os.environ["AXLFW_FAKE_MODE"] == "fault":
+    os.write(1, b"UEFI firmware (version x)\r\nSynchronous Exception at 0x49748\r\n")
+    time.sleep(60)
+os.write(1, b"Shell> ")
+line = b""
+while (c := os.read(0, 1)):
+    if c == b"\r":
+        os.write(1, b"\r\n")
+        if line == b"fs0:\\PcrRead.efi":
+            os.write(1, os.environ["AXLFW_FAKE_PCRS"].encode())
+        os.write(1, b"Shell> ")
+        line = b""
+    else:
+        os.write(1, c)
+        line += c
+"""
+# A stand-in for swtpm: its control socket, until the one client it
+# accepts goes.
+_FAKE_SWTPM = r"""
+import socket, sys
+ctrl = sys.argv[sys.argv.index("--ctrl") + 1]
+s = socket.socket(socket.AF_UNIX)
+s.bind(ctrl.split("path=", 1)[1])
+s.listen(1)
+s.settimeout(30)
+c, _ = s.accept()
+c.settimeout(60)
+while c.recv(64):
+    pass
+"""
+
+
+class PcrTests(unittest.TestCase):
+    """PcrRead.efi's output: eight SHA-256 PCRs, the firmware measured, the separators."""
+
+    def test_good(self) -> None:
+        pcrs, problems = tpm.pcr_problems(_pcr_output())
+        self.assertEqual(problems, [])
+        self.assertEqual(pcrs, {n: (_PCR0 if n == 0 else _SEPARATOR) for n in range(8)})
+
+    def test_separator(self) -> None:
+        self.assertEqual(tpm.SEPARATOR_ONLY, "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a7234a13f198e7969")
+
+    def test_refused(self) -> None:
+        good = {n: (_PCR0 if n == 0 else _SEPARATOR) for n in range(8)}
+        other = "11" * 32
+        for name, out, want in (
+            ("nothing", "", [
+                "PCRs printed: [], not 0-7 in order",
+                "no 'axlfw-pcr: done' line",
+                f"PCR3 is None, not the separator alone ({_SEPARATOR})",
+                f"PCR6 is None, not the separator alone ({_SEPARATOR})",
+            ]),
+            ("an error", "axlfw-pcr: error: no Tcg2 protocol: Not Found\r\n", [
+                "axlfw-pcr: error: no Tcg2 protocol: Not Found",
+                "PCRs printed: [], not 0-7 in order",
+                "no 'axlfw-pcr: done' line",
+                f"PCR3 is None, not the separator alone ({_SEPARATOR})",
+                f"PCR6 is None, not the separator alone ({_SEPARATOR})",
+            ]),
+            ("no done", _pcr_output(done=False), ["no 'axlfw-pcr: done' line"]),
+            ("PCR7 missing", _pcr_output({n: v for n, v in good.items() if n != 7}),
+             ["PCRs printed: [0, 1, 2, 3, 4, 5, 6], not 0-7 in order"]),
+            ("out of order", _pcr_output({1: good[1], 0: good[0], **{n: good[n] for n in range(2, 8)}}),
+             ["PCRs printed: [1, 0, 2, 3, 4, 5, 6, 7], not 0-7 in order"]),
+            ("twice", _pcr_output() + "axlfw-pcr: sha256 PCR7 " + "AB" * 32 + "\r\n",
+             ["PCRs printed: [0, 1, 2, 3, 4, 5, 6, 7, 7], not 0-7 in order"]),
+            ("short", _pcr_output({**good, 5: "ab"}), ["PCR5 is ab, not 64 hex digits"]),
+            ("PCR0 zero", _pcr_output({**good, 0: "0" * 64}),
+             [f"PCR0 is {'0' * 64}: the firmware was not measured"]),
+            ("PCR0 separator", _pcr_output({**good, 0: _SEPARATOR}),
+             [f"PCR0 is {_SEPARATOR}: the firmware was not measured"]),
+            ("PCR3 other", _pcr_output({**good, 3: other}),
+             [f"PCR3 is {other}, not the separator alone ({_SEPARATOR})"]),
+            ("PCR6 zero", _pcr_output({**good, 6: "0" * 64}),
+             [f"PCR6 is {'0' * 64}, not the separator alone ({_SEPARATOR})"]),
+        ):
+            with self.subTest(name):
+                self.assertEqual(tpm.pcr_problems(out)[1], want)
+
+    def test_devices(self) -> None:
+        self.assertEqual(tpm.DEVICE, {"x64": "tpm-tis", "aarch64": "tpm-tis-device"})
+
+    def test_app(self) -> None:
+        self.assertEqual(
+            tpm.app(Path("/w"), "GCC", "aarch64"), Path("/w/Build/AxlFwTpm/DEBUG_GCC/AARCH64/PcrRead.efi")
+        )
+
+
+class TpmCheckTests(unittest.TestCase):
+    """tpm.check against stand-ins for QEMU and swtpm."""
+
+    def run_check(self, t: Path, mode: str, pcrs: str, with_app: bool = True) -> tuple[boot.Result, list[str]]:
+        bin_dir = t / "bin"
+        bin_dir.mkdir()
+        for name, script in (("qemu-system-aarch64", _FAKE_TPM_QEMU), ("swtpm", _FAKE_SWTPM)):
+            (bin_dir / name).write_text(f"#!{sys.executable}\n{script}")
+            (bin_dir / name).chmod(0o755)
+        for name in ("code.fd", "vars.fd", "Shell_AARCH64.efi", "PcrRead.efi"):
+            (t / name).write_bytes(b"x")
+        s = boot.ImageSet("aarch64", "DEBUG", t / "code.fd", t / "vars.fd", t / "Shell_AARCH64.efi", "tag")
+        env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "AXLFW_FAKE_ARGV": str(t / "argv.json"),
+            "AXLFW_FAKE_MODE": mode,
+            "AXLFW_FAKE_PCRS": pcrs,
+        }
+        with mock.patch.dict(os.environ, env):
+            r = tpm.check(s, t / "PcrRead.efi" if with_app else None, bin_dir, t / "logs", 5)
+        return r, json.loads((t / "argv.json").read_text())
+
+    def test_pcrs_read(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            r, argv = self.run_check(Path(t), "shell", _pcr_output())
+            self.assertEqual(r.problems, [])
+            self.assertEqual(r.facts, {"tpm": {"device": "tpm-tis-device", "shell": True, "pcrs_read": True}})
+            self.assertEqual(argv[argv.index("-tpmdev") + 1], "emulator,id=tpm0,chardev=chrtpm")
+            self.assertEqual(argv[argv.index("-tpmdev") + 3], "tpm-tis-device,tpmdev=tpm0")
+
+    def test_shell_only(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            r, _ = self.run_check(Path(t), "shell", "", with_app=False)
+            self.assertEqual(r.problems, [])
+            self.assertEqual(r.facts, {"tpm": {"device": "tpm-tis-device", "shell": True, "pcrs_read": False}})
+
+    def test_bad_pcrs(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            r, _ = self.run_check(Path(t), "shell", _pcr_output(done=False))
+            self.assertEqual(r.problems, ["aarch64 DEBUG: with a TPM, PcrRead.efi: no 'axlfw-pcr: done' line"])
+            self.assertEqual(r.facts, {"tpm": {"device": "tpm-tis-device", "shell": True, "pcrs_read": False}})
+
+    def test_fault(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            r, _ = self.run_check(Path(t), "fault", "")
+            self.assertEqual(len(r.problems), 1)
+            self.assertEqual(
+                r.problems[0].split("\n")[:3],
+                [
+                    "aarch64 DEBUG: with a TPM (tpm-tis-device): aarch64-debug-tpm: no Shell prompt within 5 s;"
+                    " console ends:",
+                    "UEFI firmware (version x)",
+                    "Synchronous Exception at 0x49748",
+                ],
+            )
+            self.assertEqual(r.facts, {"tpm": {"device": "tpm-tis-device", "shell": False, "pcrs_read": False}})
+
+    def test_no_swtpm(self) -> None:
+        with mock.patch.object(boot.shutil, "which", return_value=None):
+            self.assertEqual(tpm.missing_swtpm(), ["swtpm not found on PATH: the TPM boot check needs it"])
 
 
 class SymbolsTests(unittest.TestCase):

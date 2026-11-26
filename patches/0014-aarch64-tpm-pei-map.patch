@@ -1,0 +1,166 @@
+Subject: [PATCH] ArmVirtPkg/QemuVirtMemInfoLib: map the TPM too
+
+Since 158c1b614 ("ArmVirtPkg: Refactor virtual memory mapping for qemu
+guest firmware"), PEI maps only the console UART's page and fw_cfg, no
+longer virt's whole peripheral window (0x08000000, 128 MB), so with a
+TPM attached (QEMU's tpm-tis-device, on the platform bus at 0x0c000000)
+Tcg2ConfigPei's first read of it takes a level 2 translation fault (seen:
+"Synchronous Exception" in Tcg2ConfigPei's MmioRead8, ESR 0x96000006,
+FAR 0xc000000, TPM_ACCESS), and an image with a TPM never boots.
+
+Map the TPM's MMIO region as the console UART's is mapped (device
+memory, with the CCA protection bit): the first "tcg,tpm-tis-mmio" node
+in the device tree, its 'reg' translated through its parent's 'ranges'
+as PlatformPeiLib translates it for PcdTpmBaseAddress. With no TPM the
+table is as before. The table grows by one entry, and the TPM is mapped
+only while an entry stays for the end.
+
+axl-firmware's patch against edk2-stable202611, applied after
+0003-map-debug-uart.patch to a copy of the packages it touches.
+
+---
+diff --git a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
+index bbc741e..83a85ad 100644
+--- a/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
++++ b/ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoLib.c
+@@ -22,8 +22,8 @@
+ // Number of Virtual Memory Map Descriptors: DRAM, the FV, the console UART,
+ // fw_cfg and the end of the table, plus up to two other PL011s (as many as
+ // FdtSerialGetPorts returns; neither is the console when "/chosen" names
+-// a third).
+-#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (7)
++// a third), plus the TPM.
++#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS  (8)
+ 
+ /** A macro to trace the memory map.
+ **/
+@@ -174,6 +174,93 @@ GetFwCfgMmioRegion (
+   return Status;
+ }
+ 
++/**
++  Get the TPM's MMIO region from the device tree: the first node compatible
++  with "tcg,tpm-tis-mmio", its 'reg' translated through its parent's 'ranges'
++  when it sits on a bus (QEMU's mach-virt puts tpm-tis-device on the platform
++  bus), as PlatformPeiLib translates it for PcdTpmBaseAddress.
++
++  @param[in]  DeviceTreeBase        Base address of the Device Tree.
++  @param[out] TpmBase               Base address of the TPM's MMIO region.
++  @param[out] TpmSize               Size of the TPM's MMIO region.
++
++  @retval RETURN_INVALID_PARAMETER  Device Tree Base address is invalid.
++  @retval RETURN_NOT_FOUND          No TPM node, or one that cannot be parsed.
++  @retval RETURN_SUCCESS            TpmBase and TpmSize have been populated.
++**/
++STATIC
++RETURN_STATUS
++EFIAPI
++GetTpmMmioRegion (
++  IN  VOID    *DeviceTreeBase,
++  OUT UINT64  *TpmBase,
++  OUT UINT64  *TpmSize
++  )
++{
++  INT32         Node;
++  INT32         Parent;
++  INT32         Len;
++  INT32         RangesLen;
++  CONST UINT32  *Reg;
++  CONST UINT32  *Ranges;
++
++  if (DeviceTreeBase == NULL) {
++    return RETURN_INVALID_PARAMETER;
++  }
++
++  Node = FdtNodeOffsetByCompatible (DeviceTreeBase, -1, "tcg,tpm-tis-mmio");
++  if (Node < 0) {
++    return RETURN_NOT_FOUND;
++  }
++
++  //
++  // One cell each for the address and the size, or two each.
++  //
++  Reg = FdtGetProp (DeviceTreeBase, Node, "reg", &Len);
++  if ((Reg == NULL) || ((Len != 8) && (Len != 16))) {
++    return RETURN_NOT_FOUND;
++  }
++
++  if (Len == 8) {
++    *TpmBase = Fdt32ToCpu (Reg[0]);
++    *TpmSize = Fdt32ToCpu (Reg[1]);
++  } else {
++    *TpmBase = Fdt64ToCpu (ReadUnaligned64 ((CONST UINT64 *)Reg));
++    *TpmSize = Fdt64ToCpu (ReadUnaligned64 ((CONST UINT64 *)Reg + 1));
++  }
++
++  Parent = FdtParentOffset (DeviceTreeBase, Node);
++  if (Parent < 0) {
++    return RETURN_NOT_FOUND;
++  }
++
++  if (FdtNodeDepth (DeviceTreeBase, Node) > 1) {
++    //
++    // On a bus: 'ranges' is one <child base, parent base, size> tuple, the
++    // child base and the size in the cells of 'reg' and the parent base in
++    // two; an empty 'ranges' is a 1:1 mapping.
++    //
++    Ranges = FdtGetProp (DeviceTreeBase, Parent, "ranges", &RangesLen);
++    if ((Ranges == NULL) || ((RangesLen != 0) && (RangesLen != Len + 8))) {
++      return RETURN_NOT_FOUND;
++    }
++
++    if (RangesLen != 0) {
++      if (Len == 8) {
++        *TpmBase -= Fdt32ToCpu (Ranges[0]);
++      } else {
++        *TpmBase -= Fdt64ToCpu (ReadUnaligned64 ((CONST UINT64 *)Ranges));
++      }
++
++      *TpmBase += Fdt64ToCpu (
++                    ReadUnaligned64 ((CONST UINT64 *)((CONST UINT8 *)Ranges + Len / 2))
++                    );
++    }
++  }
++
++  return (*TpmSize == 0) ? RETURN_NOT_FOUND : RETURN_SUCCESS;
++}
++
+ /**
+   Return the Virtual Memory Map of your platform
+ 
+@@ -206,6 +293,8 @@ ArmVirtGetMemoryMap (
+   UINTN                         PortIdx;
+   UINT64                        FwCfgBase;
+   UINT64                        FwCfgSize;
++  UINT64                        TpmBase;
++  UINT64                        TpmSize;
+ 
+   ASSERT (VirtualMemoryMap != NULL);
+ 
+@@ -330,6 +419,26 @@ ArmVirtGetMemoryMap (
+   LOG_MEM_MAP ("FwCfg");
+   Idx++;
+ 
++  //
++  // Map the TPM, if there is one: Tcg2ConfigPei probes it in PEI, and an
++  // unmapped TPM faults on that first read. Never past the table: one entry
++  // stays for the end.
++  //
++  if (!RETURN_ERROR (GetTpmMmioRegion (DeviceTreeBase, &TpmBase, &TpmSize)) &&
++      (Idx < MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS - 1))
++  {
++    MappingBase = TpmBase & ~(UINT64)EFI_PAGE_MASK;
++    MappingSize = EFI_PAGES_TO_SIZE (
++                    EFI_SIZE_TO_PAGES (TpmBase - MappingBase + TpmSize)
++                    );
++    VirtualMemoryTable[Idx].PhysicalBase = (MappingBase | DevMapBit);
++    VirtualMemoryTable[Idx].VirtualBase  = MappingBase;
++    VirtualMemoryTable[Idx].Length       = MappingSize;
++    VirtualMemoryTable[Idx].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
++    LOG_MEM_MAP ("TPM");
++    Idx++;
++  }
++
+   // End of Table
+   ZeroMem (&VirtualMemoryTable[Idx], sizeof (ARM_MEMORY_REGION_DESCRIPTOR));
+ 

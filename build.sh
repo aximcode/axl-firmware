@@ -35,8 +35,8 @@
 # Needs git, python3 (3.9 or later; 3.10 or later for the prebuilt
 # uefi_firmware wheel), make, gcc, libuuid's headers (libuuid-devel or
 # uuid-dev), nasm, iasl, aarch64-linux-gnu-gcc (or GCC_AARCH64_PREFIX),
-# flock, xz, and QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
-# QEMU_DIR or PATH) for the boot checks. The build runs at nice 19 with
+# flock, xz, QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
+# QEMU_DIR or PATH) and swtpm (on PATH) for the boot checks. The build runs at nice 19 with
 # JOBS jobs (default: the CPUs this process may use, `nproc`; CI sets 4).
 set -euo pipefail
 
@@ -359,6 +359,7 @@ if [[ $fetch_only == 0 ]]; then
             command -v "$q" >/dev/null || die "$q not found on PATH (or set QEMU_DIR)"
         fi
     done
+    command -v swtpm >/dev/null || die "swtpm not found on PATH: the TPM boot check needs it"
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' ||
         die "python3 is $(python3 -V 2>&1); 3.9 or later is needed"
     printf '#include <uuid/uuid.h>\n' | gcc -E - >/dev/null 2>&1 ||
@@ -566,6 +567,18 @@ done
         edk2_build "$target" OvmfPkg/OvmfPkgX64.dsc X64 "${common_opts[@]}" -- "${common_pcds[@]}"
         edk2_build "$target" ArmVirtPkg/ArmVirtQemu.dsc AARCH64 "${common_opts[@]}" "${aa64_opts[@]}" \
             -- "${common_pcds[@]}" "${aa64_pcds[@]}"
+    done
+    # The TPM boot check's application (tests/tpm-pcr/, lib/axlfw/tpm.py),
+    # for each arch: a package of this repository's, read only, after the
+    # source on PACKAGES_PATH.
+    for arch in X64 AARCH64; do
+        cmd=(build -t "$toolchain" -b DEBUG -p AxlFwTpmPkg/AxlFwTpmPkg.dsc -a "$arch" -n "$jobs")
+        echo "+ ${cmd[*]} (PACKAGES_PATH adds $here/tests/tpm-pcr)"
+        PACKAGES_PATH="$PACKAGES_PATH:$here/tests/tpm-pcr" nice -n 19 "${cmd[@]}" \
+            >"$ws/build-$arch-pcrread.log" 2>&1 || {
+            tail -40 "$ws/build-$arch-pcrread.log" >&2
+            die "the $arch TPM-check application build failed (log: $ws/build-$arch-pcrread.log)"
+        }
     done
 )
 

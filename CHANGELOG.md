@@ -22,7 +22,20 @@ for real hardware. Everything else is as in r2.
   manifest stays format 2: no existing field was removed or reshaped
   (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
   PciSioSerialDxe).
-- Each new tag re-checks all five patches against upstream.
+- **`0014-aarch64-tpm-pei-map.patch`**: an AARCH64 guest with a TPM
+  (`-device tpm-tis-device`, swtpm over `-tpmdev emulator`) no longer
+  dies in PEI. r2 stopped after its banner with "Synchronous Exception"
+  (a translation fault at 0x0c000000, the TPM, in Tcg2ConfigPei's first
+  read of it): since edk2's 158c1b614, PEI maps only the console UART and
+  fw_cfg, the cause patch 0003 fixed for the second PL011. The patch maps
+  the TPM's region, found in the device tree, as the UART's is mapped.
+  Without a TPM nothing changes; X64 is built as in r2.
+- **A TPM boot check** on every image set: a boot with swtpm attached
+  must reach the Shell, and read PCRs 0-7 through the Tcg2 protocol. The
+  build and CI now need swtpm. `measured.tpm` in the manifest records it.
+  PCRs 0-7 were measured stable across warm and cold reboots of an
+  unchanged guest on both arches.
+- Each new tag re-checks every patch against upstream.
 
 ## edk2-stable202611-r2
 

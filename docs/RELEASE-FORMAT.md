@@ -208,6 +208,7 @@ Each `images.<dir>.measured`:
 | `gop_std_vga` | {`size`: [w, h], `drawn`: bool} | std-VGA's screen at the Shell (`edid=off`), from a screendump: its size (1280x800 on both arches) and whether any pixel is lit |
 | `bochs_display` | {`devices`, `size`: [w, h], `drawn`: bool} | QemuVideoDxe's device count on `bochs-display`, and its screen at the Shell (`edid=off`, so the firmware's default, 1280x800 on both arches), from a screendump: its size and whether any pixel is lit |
 | `cpu_models_reach_shell` | {model: bool} | AARCH64 only: a boot under each `-cpu` (`max`, `cortex-a57`, `neoverse-v1`) reached the Shell |
+| `tpm` | {`device`, `shell`: bool, `pcrs_read`: bool} | a boot with swtpm attached as `device` (`tpm-tis` on X64, `tpm-tis-device` on AARCH64): it reached the Shell, and the check's application read SHA-256 PCRs 0-7 through EFI_TCG2_PROTOCOL (r3 on; `build.sh check` re-runs the boot without the application) |
 
 A consumer checks an installed image as the install does: the manifest parses
 with `format` 2, lists all four image sets, and each set's `code`, `vars` and
