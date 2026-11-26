@@ -19,7 +19,9 @@ for real hardware. Everything else is as in r2.
   `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Checked: a
   release whose entry names a missing image, another arch's, or one not
   RELEASE is not packed. `default_flavour` stays `DEBUG`, and the
-  manifest stays format 2: nothing else in it changed.
+  manifest stays format 2: no existing field was removed or reshaped
+  (`edk2.patches` lists 0005, and AARCH64's `verified.drivers`
+  PciSioSerialDxe).
 - Each new tag re-checks all five patches against upstream.
 
 ## edk2-stable202611-r2

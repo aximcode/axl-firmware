@@ -12,7 +12,7 @@ removed, renamed or reshaped without the consumers agreeing first):
 | the layout `x64/`, `aarch64/`, `release/x64/`, `release/aarch64/`, each `code.fd`, `vars.fd`, `Shell_<ARCH>.efi` | every consumer |
 | `manifest.json` `format` (2), `release`, `edk2.{tag,commit}`, `images.<dir>.{flavour,code,vars,shell}` with `size` and `sha256` | vendoring and provenance (axlvmpool's `axlvmpool firmware`, a downstream vendoring script) |
 | `images.<dir>.licenses` (`[{path, chosen}]`) | a downstream vendoring script |
-| `hardware_images` (`{<arch>: <image dir>}`, from r3) | SoftBMC (the images it deploys onto physical machines) |
+| `hardware_images` (`{<arch>: <image dir>}`, from r3) | SoftBMC, from r3 (the images it deploys onto physical machines; stable by that commitment, before its first read) |
 | `images.<dir>.measured.text_modes.<display>.{modes,current}` (`modes: [[cols, rows], …]`, `current: [cols, rows]`) | axl-sdk's interactive launcher (console fit, 2026-11-25) |
 | `images.x64.flavour` (`DEBUG`), `images.x64.{code,vars}.path`, `images.x64.debug.{asserts_compiled,clear_memory}` | axl-sdk's `find_debug_ovmf` |
 | `images.<dir>.code.path` (matched to the firmware in use), `images.<dir>.shell.{path,sha256}` | axl-sdk's `find_shell_efi` |
@@ -131,7 +131,7 @@ Paths are relative to the release directory. Every value below is present.
 | `toolchain` | string | edk2's toolchain tag, `GCC` |
 | `compilers.x64`, `compilers.aarch64` | string | the compiler and version used |
 | `default_flavour` | string | `DEBUG` |
-| `hardware_images` | {string: string} | from r3: per arch (`x64`, `aarch64`), the directory of the image to ship to real hardware (the Shell and firmware deployed onto physical machines, where a DEBUG build's ASSERT can halt the box): `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Each names one of `images`, of its own arch, whose `flavour` is `RELEASE` (checked: a release whose entry names a missing image, another arch's or a DEBUG one is not packed). `default_flavour` is what QEMU guests boot, and stays `DEBUG` |
+| `hardware_images` | {string: string} | from r3: per arch (`x64`, `aarch64`), the directory of the image to ship to real hardware (the Shell and firmware deployed onto physical machines, where a DEBUG build's ASSERT can halt the box): `{"x64": "release/x64", "aarch64": "release/aarch64"}`. Each names one of `images`, of its own arch, whose `flavour` is `RELEASE` (checked: a release whose entry names a missing image, another arch's or one not RELEASE is not packed). `default_flavour` is what QEMU guests boot, and stays `DEBUG` |
 | `images` | object | one entry per image, keyed by its directory: `x64`, `aarch64`, `release/x64`, `release/aarch64` |
 | `descriptors` | [string] | the descriptors, `descriptors/<name>` |
 | `symbols.x64`, `symbols.aarch64` | string | the symbols tarballs' asset names |
@@ -253,7 +253,7 @@ for length: `images` shows only `x64` (the other three sets have the same
 fields, AARCH64's `measured` adding `cpu_models_reach_shell`),
 `verified.drivers` its first two of 24, and `licenses` its first two of 11.
 r1 had no `images.<dir>.licenses`: the x64 entry's is r2's, added by hand;
-nor `hardware_images`, r3's, added by hand too.
+and its `hardware_images` is r3's, also added by hand.
 That run predates `edid=off` on the GOP checks, so its 1280x800 sizes were
 measured with QEMU's EDID on, and the bounded patch 0003, so that patch's
 `sha256` differs from the current file's.

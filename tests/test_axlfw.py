@@ -2027,7 +2027,7 @@ class ReleaseCheckTests(unittest.TestCase):
                     for img in release.IMAGES
                 ),
             ),
-            "hardware DEBUG": (hardware_debug, "FAIL: hardware_images.x64: x64 is a DEBUG image, not RELEASE\n"),
+            "hardware DEBUG": (hardware_debug, "FAIL: hardware_images.x64: 'x64' is of flavour 'DEBUG', not RELEASE\n"),
             "no hardware": (no_hardware, "FAIL: manifest: no hardware_images\n"),
         }
         for label, (tamper, text) in cases.items():
@@ -2057,18 +2057,18 @@ class HardwareImagesTests(unittest.TestCase):
         cases: dict[str, tuple[object, list[str]]] = {
             "a DEBUG image": (
                 {"x64": "x64", "aarch64": "release/aarch64"},
-                ["hardware_images.x64: x64 is a DEBUG image, not RELEASE"],
+                ["hardware_images.x64: 'x64' is of flavour 'DEBUG', not RELEASE"],
             ),
             "both DEBUG": (
                 {"x64": "x64", "aarch64": "aarch64"},
                 [
-                    "hardware_images.x64: x64 is a DEBUG image, not RELEASE",
-                    "hardware_images.aarch64: aarch64 is a DEBUG image, not RELEASE",
+                    "hardware_images.x64: 'x64' is of flavour 'DEBUG', not RELEASE",
+                    "hardware_images.aarch64: 'aarch64' is of flavour 'DEBUG', not RELEASE",
                 ],
             ),
             "another arch's": (
                 {"x64": "release/aarch64", "aarch64": "release/aarch64"},
-                ["hardware_images.x64: release/aarch64 is an aarch64 image"],
+                ["hardware_images.x64: 'release/aarch64' is an image of arch 'aarch64'"],
             ),
             "a missing image": (
                 {"x64": "release/x86", "aarch64": "release/aarch64"},
@@ -2086,7 +2086,7 @@ class HardwareImagesTests(unittest.TestCase):
                 {"x64": "release/x64", "aarch64": "release/aarch64", "riscv64": "release/x64"},
                 [
                     "hardware_images: arches ['aarch64', 'riscv64', 'x64'], not ['aarch64', 'x64']",
-                    "hardware_images.riscv64: release/x64 is an x64 image",
+                    "hardware_images.riscv64: 'release/x64' is an image of arch 'x64'",
                 ],
             ),
             "not an object": (["release/x64"], ["hardware_images: ['release/x64'] is not an object"]),
@@ -2101,6 +2101,16 @@ class HardwareImagesTests(unittest.TestCase):
         self.assertEqual(
             release.check_hardware_images(release.HARDWARE_IMAGES, images),
             ["hardware_images.x64: 'release/x64' is not an image of the release"],
+        )
+
+    def test_an_entry_without_arch_or_flavour(self) -> None:
+        images: Manifest = {**self.IMAGES, "release/x64": {"arch": "x64"}, "release/aarch64": {}}
+        self.assertEqual(
+            release.check_hardware_images(release.HARDWARE_IMAGES, images),
+            [
+                "hardware_images.x64: 'release/x64' is of flavour None, not RELEASE",
+                "hardware_images.aarch64: 'release/aarch64' is an image of arch None",
+            ],
         )
 
     def test_assemble_stops_on_a_hardware_image_problem(self) -> None:
@@ -2124,7 +2134,7 @@ class HardwareImagesTests(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             self.assertEqual(release.assemble(a), 1)
-        self.assertEqual(err.getvalue(), "FAIL: hardware_images.x64: x64 is a DEBUG image, not RELEASE\n")
+        self.assertEqual(err.getvalue(), "FAIL: hardware_images.x64: 'x64' is of flavour 'DEBUG', not RELEASE\n")
 
 
 class BuildShTests(unittest.TestCase):

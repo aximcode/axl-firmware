@@ -585,8 +585,45 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
       to ConIn, ConOut and ErrOut; the PCI port is a console only when a
       console variable names it. OVMF's X64 `PlatformBootManagerLib` adds a
       PCI 16550 to the console itself (`IS_PCI_16550SERIAL`), as before.
+    - *Connected only when BDS connects everything.* ArmVirtQemu's BDS
+      calls `EfiBootManagerConnectAll` only when QEMU gives no boot order
+      (`ConnectDevicesFromQemu` fails); with a `bootindex` on any device it
+      connects just the boot devices, and the PCI port has no
+      EFI_SERIAL_IO until something connects it (the Shell's `connect -r`,
+      or an application's `ConnectController`). X64 connects it in either
+      case, as a console.
     - *Checked on every release* by the driver check (PROPERTIES.md), RED
       with the patch removed.
+    - *Measured* (AlmaLinux 10 x86_64, QEMU 10.0.0; AARCH64 DEBUG under TCG
+      `cortex-a57`, X64 DEBUG under KVM), each with `-chardev
+      socket,id=pciser,path=...,server=on,wait=off -device
+      pci-serial,chardev=pciser` added to the boot checks' command line.
+      r3 AARCH64: `dh -p SerialIo` lists two handles,
+      `VenHw(D3987D4B-971A-435F-8CAF-4967EB627241)/Uart(38400,8,N,1)` (the
+      PL011, through SerialDxe) and `PciRoot(0x0)/Pci(0x2,0x0)/Uart(38400,8,N,1)`,
+      and `sermode` both. The Shell ran on the PL011 as before; the socket
+      got only TerminalDxe's 33 bytes of screen reset (`ESC[2J`,
+      `ESC[001;001H`, `ESC[=3h`), no console text. With
+      `PciRoot(0x0)/Pci(0x2,0x0)/Uart(38400,8,N,1)/VenVt100()` set in
+      ConIn, ConOut and ErrOut (`setvar ... =--<path>`) and a `reset`, the
+      console was on both ports: `echo` typed on the socket ran and was
+      echoed on the socket and the PL011, and `echo` typed on the PL011
+      reached the socket. Control, r2's AARCH64 DEBUG under the same command
+      line: one SerialIo, the PL011's; r2's AARCH64 images fail the driver
+      check (`lacks: PciSioSerialDxe (E2775B47-...)`). With
+      `bootindex=0` on the boot disk, r3 lists one SerialIo until `connect
+      -r`, then two. X64, r2 and r3 alike: two SerialIo, the PCI port's
+      `PciRoot(0x0)/Pci(0x2,0x0)/Uart(115200,8,N,1)` and COM1's
+      `PciRoot(0x0)/Pci(0x1F,0x0)/Serial(0x0)/Uart(115200,8,N,1)`, the PCI
+      port a console from the start (an `echo` typed on it ran). X64's build
+      reads nothing the patch changes: no file of its build directory, nor
+      its build reports, names ArmVirtPkg (AARCH64's report names it 66
+      times). A byte comparison with a build without patch 0005 (the
+      sabotage build below) does not settle it, since that build ran in
+      another workspace path, which DEBUG's strings and RELEASE's
+      makefiles (a response file for the longer path, another object
+      order) carry; RELEASE's PciSioSerialDxe.efi is identical in both.
+      r3's text modes equal r2's on all four image sets.
 
 27. **`hardware_images` in the manifest** (owner, 2026-11-25, for r3). A
     top-level map from each arch to the image directory a consumer ships

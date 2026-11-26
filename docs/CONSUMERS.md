@@ -79,6 +79,13 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   IDs and subclass, so it is skipped too and its display may stay blank. Use
   `-device VGA`, `bochs-display`, `virtio-gpu-pci` or `ramfb` on AARCH64. X64
   is unaffected.
+- **AARCH64's PCI serial port is connected only by a full connect.** A
+  `-device pci-serial` gets an EFI_SERIAL_IO on AARCH64 from r3 (patch 0005),
+  but ArmVirtQemu's BDS connects every device only when QEMU gives no boot
+  order: with a `bootindex` on any device it connects just the boot devices,
+  so run the Shell's `connect -r`, or `ConnectController` on the port, first.
+  It is never a console unless a ConIn, ConOut or ErrOut variable names it.
+  On X64 the port is connected, and a console, either way.
 - **No Shell fallback.** With no bootable disk, the firmware does not start the
   embedded Shell; boot your own disk, or put `Shell_<ARCH>.efi` on it.
 

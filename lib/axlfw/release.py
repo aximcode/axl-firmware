@@ -116,9 +116,9 @@ def check_hardware_images(value: object, images: dict[str, object]) -> list[str]
         if entry is None:
             problems.append(f"hardware_images.{arch}: {d!r} is not an image of the release")
         elif entry.get("arch") != arch:
-            problems.append(f"hardware_images.{arch}: {d} is an {entry.get('arch')} image")
+            problems.append(f"hardware_images.{arch}: {d!r} is an image of arch {entry.get('arch')!r}")
         elif entry.get("flavour") != "RELEASE":
-            problems.append(f"hardware_images.{arch}: {d} is a {entry.get('flavour')} image, not RELEASE")
+            problems.append(f"hardware_images.{arch}: {d!r} is of flavour {entry.get('flavour')!r}, not RELEASE")
     return problems
 
 
