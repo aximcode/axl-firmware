@@ -52,12 +52,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install the build and QEMU
+      # swtpm: the TPM boot check's TPM (lib/axlfw/tpm.py); without it the
+      # boot checks fail, never skip.
+      - name: Install the build, QEMU and swtpm
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential uuid-dev nasm \
             acpica-tools gcc-aarch64-linux-gnu python3-venv xz-utils git \
-            qemu-system-x86 qemu-system-arm
+            qemu-system-x86 qemu-system-arm swtpm
       - name: KVM for the X64 boots, where the runner has it
         run: |
           if [ -e /dev/kvm ]; then
@@ -78,7 +80,7 @@ jobs:
           sudo sysctl -w kernel.io_uring_disabled=2
           sysctl kernel.io_uring_disabled
           [ "$(sysctl -n kernel.io_uring_disabled)" = 2 ]
-          dpkg-query -W qemu-system-x86 qemu-system-arm
+          dpkg-query -W qemu-system-x86 qemu-system-arm swtpm
           qemu-system-x86_64 --version
           qemu-system-aarch64 --version
       - name: The edk2 source, cached by its pinned commit

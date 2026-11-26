@@ -1093,6 +1093,88 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     mouse or tablet") implies usb-tablet works, which it does not, and is
     left as it is (§4.7; the release builder touches no patch).
 
+37. **Patch 0014, the TPM mapped in PEI on AARCH64, and the TPM boot check**
+    (owner, 2026-11-25, for r3; found by the r3 release builder). An AARCH64
+    guest with a TPM (`-chardev socket,...` to swtpm, `-tpmdev emulator`,
+    `-device tpm-tis-device`) never boots: r2's DEBUG image prints its banner
+    and "Synchronous Exception at 0x4A700", and stops there.
+    - *The cause, the one patch 0003 fixed for the second PL011* (§4.19).
+      Measured on r2's AARCH64 DEBUG under TCG `cortex-a57` (AlmaLinux 10
+      x86_64, QEMU 10.0.0, swtpm 0.9.0), with QEMU's `-d int`: a data abort
+      from EL1, ESR 0x96000006 (a level 2 translation fault), FAR 0xc000000,
+      ELR 0x4a700; X20 0x0c000000. 0xc000000 is QEMU's TPM on `virt`'s
+      platform bus: the device tree's `/platform-bus@c000000/tpm_tis@0`,
+      `compatible = "tcg,tpm-tis-mmio"`, `reg = <0x0 0x5000>`, the bus's
+      `ranges = <0x0 0x0 0x0c000000 0x02000000>`. On the r3 candidate's
+      layout the fault is at 0x49748, which the FV map and
+      `Tcg2ConfigPei.debug` place in Tcg2ConfigPei's `MmioRead8Internal`:
+      its first read of the TPM (TPM_ACCESS, at PcdTpmBaseAddress, which
+      PlatformPeiLib set from the same node). Since upstream `158c1b614`
+      PEI's table (QemuVirtMemInfoLib) holds DRAM, the FV, the console UART
+      and fw_cfg only; 202511's mapped `virt`'s whole peripheral window,
+      0x08000000 for 128 MB, which holds 0x0c000000. No upstream fix or
+      issue as of 2026-11-25.
+    - *The patch* maps the TPM's MMIO region as the console UART's is
+      mapped (device memory, CCA bit), after fw_cfg: the first
+      `tcg,tpm-tis-mmio` node, its `reg` (one cell each or two each)
+      translated through its parent's `ranges` exactly as PlatformPeiLib
+      translates it for PcdTpmBaseAddress, so the page mapped is the page
+      read; the whole `reg` (0x5000, five localities) rounded to pages.
+      With no TPM node, or one that does not parse, nothing is added and
+      the table is as before. The table grows by one entry, to 8, and the
+      TPM is mapped only while an entry stays for the end; patch 0003's
+      loop is unchanged. Applied after 0003 (the same file).
+    - *Verified* (AlmaLinux 10 x86_64, QEMU 10.0.0, swtpm 0.9.0; AARCH64
+      under TCG `cortex-a57`, X64 under KVM). RED: r2's AARCH64 DEBUG with
+      the TPM, as above, no Shell within 60 s. GREEN, all four of this
+      build's image sets with the TPM: the Shell, and `PcrRead.efi` read
+      PCRs 0-7 (below). Without the TPM every r2 boot check passes
+      unchanged, and the text modes on all four sets equal r2's manifest's.
+      X64 is built as in r2 (the patch touches only ArmVirtPkg).
+    - *The TPM boot check* (`lib/axlfw/tpm.py`, in every image set's boot
+      checks): a boot of its own with swtpm attached (`tpm-tis` on X64,
+      `tpm-tis-device` on AARCH64), which must reach the Shell. In the
+      build, the Shell then runs `PcrRead.efi` (`tests/tpm-pcr/`, built by
+      build.sh for each arch beside the firmware, out of tree, never
+      shipped): TPM2_PCR_Read of SHA-256 PCRs 0-7 through
+      EFI_TCG2_PROTOCOL's SubmitCommand. It must print all eight, in order,
+      and its closing line; PCR0 neither zero nor the separator alone (the
+      firmware measured); PCRs 3 and 6 exactly the separator alone
+      (`3d458cfe…7969`, SHA-256 of 32 zero bytes and the digest of
+      EV_SEPARATOR's four zero bytes), which Tcg2Dxe extends into each of
+      PCRs 0-7 at ReadyToBoot. `build.sh check`, on a packed release,
+      has no application: there the boot runs to the Shell only, which
+      still catches this fault. swtpm must be on PATH: build.sh refuses to
+      start without it, and the boot checks refuse before any boot; never
+      a skip. CI's build job installs Ubuntu's `swtpm` (noble: 0.7.3, in
+      main) and states its version. *To verify on CI:* Ubuntu's swtpm has
+      an AppArmor profile in enforce mode (`/tmp/** rwk`, `owner
+      @{HOME}/** rwk`); the control socket is under `/tmp` and the state
+      under the checkout, both allowed by it, but its `unix` rules name only
+      unnamed and libvirt peers, so whether it lets swtpm listen on a path
+      socket is first shown by CI's run.
+    - *For SoftBMC: PCRs 0-7 are stable.* On this build's AARCH64 DEBUG,
+      AARCH64 RELEASE and X64 DEBUG (the same platform as above), one
+      unchanged guest (one vars copy, one swtpm state directory), a cold
+      boot, two warm resets (`reset`), then two more cold boots (a new QEMU
+      and swtpm each): PCRs 0-7 of the SHA-256 bank identical in all five
+      reads, on each set. PCRs 2, 3, 5 and 6 are the separator alone on
+      both arches; PCR7 is the same on both
+      (`b5710bf5…1439`, Secure Boot off); PCR1 and PCR4 differ by arch, and
+      PCR0 by image (the firmware's own bytes: a rebuild of AARCH64 DEBUG
+      whose bytes differed, §5 item 2, gave another PCR0).
+    - *Sabotage:* this build without patch 0014 fails exactly the two
+      AARCH64 TPM boots, DEBUG ("Synchronous Exception at 0x49748") and
+      RELEASE (at 0x2D5A0), no Shell within 180 s, and packs nothing; X64's
+      TPM boots pass. Control: with the patch, every check passes, and
+      `build.sh check` on the packed tarball passes too (its TPM boots to
+      the Shell on all four).
+    - *`build.sh check` on an older release now fails on AARCH64:* r1's and
+      r2's AARCH64 images have this fault, and the check boots every image
+      set with a TPM. `check` re-checks a release this tree built, against
+      its own descriptors and drivers (r2 already fails the PciSioSerialDxe
+      driver check), so it is not gated.
+
 ## 5. Open decisions (the owner's)
 
 1. **Release signing.** A release is checked by sha256 only. GitHub's artifact

@@ -29,11 +29,12 @@ import re
 import shutil
 import sys
 import tarfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from axlfw import boot, checks, fv, guard, install, isa, volinfo, licenses as lic_mod
+from axlfw import boot, checks, fv, guard, install, isa, tpm, volinfo, licenses as lic_mod
 
 FORMAT = 2
 AARCH64_FLASH = 64 * 1024 * 1024
@@ -382,21 +383,40 @@ def _setting(name: str, default: str, kind: type[int] | type[float], what: str) 
     return number if number > 0 and math.isfinite(number) else f"{name}={value!r}: not a positive {what}"
 
 
+# The boot checks' guest applications, each built by build.sh for every
+# arch (its guest_apps loop): name, then what needs it and where the build
+# puts it.
+APPS: dict[str, tuple[str, Callable[[Path, str, str], Path]]] = {
+    guard.APP: ("the guard check", guard.app),
+    tpm.APP: ("the TPM check", tpm.app),
+}
+
+
+def guest_apps(ws: Path, toolchain: str) -> dict[str, dict[str, Path]]:
+    """Where the build put each of APPS, per arch."""
+    return {name: {arch: locate(ws, toolchain, arch) for arch in checks.ARCHES} for name, (_, locate) in APPS.items()}
+
+
 def boot_checks(
-    root: Path, tag: str, qemu_dir: Path | None, logs: Path, overrun: dict[str, Path] | None = None
+    root: Path, tag: str, qemu_dir: Path | None, logs: Path, apps: dict[str, dict[str, Path]] | None = None
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """Every image set's boot checks, AXLFW_BOOT_JOBS (default 2) at a time.
 
-    overrun, per arch, the guard check's application (guard.app): with it,
-    each DEBUG and GUARDED set also runs guard.check (the build has it;
-    `build.sh check`, on a packed release, does not). A bad setting, a QEMU
-    not found, or an application missing is a problem before any boot.
+    Each set also boots with a TPM (tpm.check). apps, the guest
+    applications (guest_apps: name, then arch), as the build has them;
+    `build.sh check`, on a packed release, has none. With guard.APP, each
+    DEBUG and GUARDED set also runs guard.check; with tpm.APP, the TPM boot
+    also reads the PCRs. A bad setting, a QEMU or swtpm not found, or an
+    application missing is a problem before any boot.
     """
     jobs = _setting("AXLFW_BOOT_JOBS", "2", int, "whole number")
     timeout = _setting("AXLFW_BOOT_TIMEOUT", "180", float, "number of seconds")
     problems = [x for x in (jobs, timeout) if isinstance(x, str)]
     problems += boot.missing_qemu(qemu_dir, checks.ARCHES)
-    problems += [f"{p}: no {guard.APP} for the guard check" for p in (overrun or {}).values() if not p.is_file()]
+    problems += tpm.missing_swtpm()
+    problems += [
+        f"{p}: no {name} for {APPS[name][0]}" for name, per in (apps or {}).items() for p in per.values() if not p.is_file()
+    ]
     if problems:
         return {}, problems
     assert not isinstance(jobs, str) and not isinstance(timeout, str)  # noqa: S101 - refused above
@@ -406,10 +426,14 @@ def boot_checks(
         d = root / img.dir
         s = boot.ImageSet(img.arch, img.flavour, d / "code.fd", d / "vars.fd", d / img.shell, tag)
         r = boot.run(s, qemu_dir, logs, timeout)
-        if overrun is not None and img.flavour in guard.FLAVOURS:
-            g = guard.check(s, overrun[img.arch], qemu_dir, logs, timeout)
+        given = apps or {}
+        if guard.APP in given and img.flavour in guard.FLAVOURS:
+            g = guard.check(s, given[guard.APP][img.arch], qemu_dir, logs, timeout)
             r.facts.update(g.facts)
             r.problems += g.problems
+        t = tpm.check(s, given.get(tpm.APP, {}).get(img.arch), qemu_dir, logs, timeout)
+        r.facts.update(t.facts)
+        r.problems += t.problems
         return r
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=int(jobs)) as pool:
@@ -483,8 +507,7 @@ def assemble(a: AssembleArgs) -> int:
             f" {c['without_code']} without compiled code)",
             flush=True,
         )
-    overrun = {arch: guard.app(a.ws, a.toolchain, arch) for arch in checks.ARCHES}
-    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs", overrun)
+    measured, problems = boot_checks(stage, a.tag, a.qemu_dir, a.stage / "boot-logs", guest_apps(a.ws, a.toolchain))
     if problems:
         print("\n".join(f"FAIL: {p}" for p in problems), file=sys.stderr)
         if measured:

@@ -331,6 +331,7 @@ REQUIRED_PATCHES = (
     "0011-virtiofs-tpl.patch",
     "0012-localapic-eoi.patch",
     "0013-tcp-clone-child.patch",
+    "0014-aarch64-tpm-pei-map.patch",
 )
 # The files a compiler reads: these must be compiled from the patched copy.
 _COMPILED = (".c", ".h", ".S", ".nasm", ".asm")

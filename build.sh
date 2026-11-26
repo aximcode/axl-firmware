@@ -36,8 +36,8 @@
 # Needs git, python3 (3.9 or later; 3.10 or later for the prebuilt
 # uefi_firmware wheel), make, gcc, libuuid's headers (libuuid-devel or
 # uuid-dev), nasm, iasl, aarch64-linux-gnu-gcc (or GCC_AARCH64_PREFIX),
-# flock, xz, and QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
-# QEMU_DIR or PATH) for the boot checks. The build runs at nice 19 with
+# flock, xz, QEMU (qemu-system-x86_64 and qemu-system-aarch64, from
+# QEMU_DIR or PATH) and swtpm (on PATH) for the boot checks. The build runs at nice 19 with
 # JOBS jobs (default: the CPUs this process may use, `nproc`; CI sets 4).
 set -euo pipefail
 
@@ -360,6 +360,7 @@ if [[ $fetch_only == 0 ]]; then
             command -v "$q" >/dev/null || die "$q not found on PATH (or set QEMU_DIR)"
         fi
     done
+    command -v swtpm >/dev/null || die "swtpm not found on PATH: the TPM boot check needs it"
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' ||
         die "python3 is $(python3 -V 2>&1); 3.9 or later is needed"
     printf '#include <uuid/uuid.h>\n' | gcc -E - >/dev/null 2>&1 ||
@@ -599,17 +600,25 @@ done
         edk2_build GUARDED DEBUG ArmVirtPkg/ArmVirtQemu.dsc AARCH64 "${common_opts[@]}" "${aa64_opts[@]}" \
             -- "${common_pcds[@]}" "${aa64_pcds[@]}" "${guard_pcds[@]}"
     )
-    # The guard check's application (tests/guard-overrun/, lib/axlfw/guard.py),
-    # for each arch: a package of this repository's, read only, after the
-    # source on PACKAGES_PATH.
-    for arch in X64 AARCH64; do
-        cmd=(build -t "$toolchain" -b DEBUG -p AxlFwGuardPkg/AxlFwGuardPkg.dsc -a "$arch" -n "$jobs")
-        echo "+ ${cmd[*]} (PACKAGES_PATH adds $here/tests/guard-overrun)"
-        PACKAGES_PATH="$PACKAGES_PATH:$here/tests/guard-overrun" nice -n 19 "${cmd[@]}" \
-            >"$ws/build-$arch-overrun.log" 2>&1 || {
-            tail -40 "$ws/build-$arch-overrun.log" >&2
-            die "the $arch guard-check application build failed (log: $ws/build-$arch-overrun.log)"
-        }
+    # The boot checks' guest applications (lib/axlfw/release.py's APPS),
+    # each for each arch: a package of this repository's under tests/, read
+    # only, after the source on PACKAGES_PATH. Each entry: its directory, its
+    # DSC, its log's name, and the check it is for.
+    guest_apps=(
+        "guard-overrun AxlFwGuardPkg/AxlFwGuardPkg.dsc overrun guard-check"
+        "tpm-pcr AxlFwTpmPkg/AxlFwTpmPkg.dsc pcrread TPM-check"
+    )
+    for entry in "${guest_apps[@]}"; do
+        read -r dir dsc name what <<<"$entry"
+        for arch in X64 AARCH64; do
+            cmd=(build -t "$toolchain" -b DEBUG -p "$dsc" -a "$arch" -n "$jobs")
+            echo "+ ${cmd[*]} (PACKAGES_PATH adds $here/tests/$dir)"
+            PACKAGES_PATH="$PACKAGES_PATH:$here/tests/$dir" nice -n 19 "${cmd[@]}" \
+                >"$ws/build-$arch-$name.log" 2>&1 || {
+                tail -40 "$ws/build-$arch-$name.log" >&2
+                die "the $arch $what application build failed (log: $ws/build-$arch-$name.log)"
+            }
+        done
     done
 )
 

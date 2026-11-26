@@ -15,6 +15,7 @@ against its source.
 | an AArch64 cross gcc | `gcc-aarch64-linux-gnu` | `gcc-aarch64-linux-gnu` |
 | python3 3.9+ with venv (3.10+ for uefi_firmware's prebuilt wheel) | `python3` | `python3 python3-venv` |
 | QEMU, for the boot checks | `qemu-system-x86 qemu-system-aarch64`, or a source build | `qemu-system-x86 qemu-system-arm` |
+| swtpm, for the TPM boot check | `swtpm` | `swtpm` |
 
 `build.sh` checks each before it starts. `GCC_AARCH64_PREFIX` names another
 cross prefix; `QEMU_DIR` names a directory holding `qemu-system-x86_64` and
@@ -134,9 +135,11 @@ what was found.
 3. **Re-check, then rebase, each patch** (0001 pointer drivers,
    0002 bochs-display video, 0003 the debug UART's PEI mapping, 0004
    TerminalDxe's control keys, 0005 PciSioSerialDxe in ArmVirtQemu and its
-   connection by BDS; r3 console: 0006 the PS/2 mouse's SioBus child, 0007
-   the Shell's serial Ctrl-S, 0008 TerminalDxe's wide characters, 0009 the
-   Shell's DeleteFileByName, 0010 the virtio mouse's wheel). First check whether upstream has fixed or
+   connection by BDS; 0006 the PS/2 mouse's SioBus child, 0007 the Shell's
+   serial Ctrl-S, 0008 TerminalDxe's wide characters, 0009 the Shell's
+   DeleteFileByName, 0010 the virtio mouse's wheel; 0011 VirtioFsDxe's lock,
+   0012 LocalApicLib's one MSR read, 0013 TcpDxe's clone child; 0014 the
+   TPM's PEI mapping). First check whether upstream has fixed or
    added what it does by the new tag; if so, drop the patch (or the part),
    and say so in CHANGELOG.md and DESIGN.md. For 0004, read
    `git log <old>..<new> -- MdeModulePkg/Universal/Console/TerminalDxe` and

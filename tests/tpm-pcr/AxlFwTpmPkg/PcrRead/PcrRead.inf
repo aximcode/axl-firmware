@@ -1,0 +1,25 @@
+## @file
+# Reads PCRs 0-7 of the SHA-256 bank through EFI_TCG2_PROTOCOL (PcrRead.c).
+##
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = PcrRead
+  FILE_GUID      = abce3e32-4910-462d-a072-3b8fcef0cb34
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = UefiMain
+
+[Sources]
+  PcrRead.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiTcg2ProtocolGuid    ## CONSUMES
