@@ -159,7 +159,7 @@ copied by hand (`--from <path> --sha256 <hex>`) where there is no network.
   variable names it. On X64 the port is a console from the start.
 - **The PS/2 mouse (X64, from r3) needs a full connect, and no other mouse.**
   Patch 0006 gives QEMU's PS/2 mouse a SimplePointer at
-  `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F03,0x0)`. OVMF's BDS connects it only
+  `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F13,0x0)`. OVMF's BDS connects it only
   when QEMU gives no boot order; with a `bootindex`, run `connect -r` first.
   QEMU sends it events only while it is QEMU's active mouse (`info mice`): a
   USB or virtio mouse added later takes them. `-machine i8042=off` removes it.

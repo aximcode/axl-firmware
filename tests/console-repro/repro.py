@@ -10,7 +10,7 @@ build's work/stage/axl-firmware-<release>); --probe the build directory of
 AxlConsoleReproPkg (Build/AxlConsoleRepro/RELEASE_GCC, holding X64/ and
 AARCH64/Probe.efi, built by build-probe.sh beside this file). The items (DESIGN §4.26, §4.28, §4.29):
 
-    ps2-mouse        x64: a SimplePointer at Acpi(PNP0F03,0x0), and three
+    ps2-mouse        x64: a SimplePointer at Acpi(PNP0F13,0x0), and three
                      `mouse_move 10 5` reaching it (patch 0006)
     ctrl-s           a serial Ctrl-S pauses the ticks script, a key resumes
                      it (patch 0007)
@@ -103,7 +103,7 @@ def ps2_mouse(r: Run) -> None:
     listed, sums = pointers(r.g, 5, ["mouse_move 10 5"] * 3)
     for i, (path, rz) in sorted(listed.items()):
         r.say(f"pointer {i}: {path} ResolutionZ {rz}, moved x,y,z {sums.get(i, [0, 0, 0])}")
-    ps2 = [i for i, (path, _) in listed.items() if path.endswith("/Acpi(PNP0F03,0x0)")]
+    ps2 = [i for i, (path, _) in listed.items() if path.endswith("/Acpi(PNP0F13,0x0)")]
     if not listed:
         r.say("no SimplePointer with a device path")
     r.fixed = len(ps2) == 1 and sums.get(ps2[0], [0, 0, 0])[0] == 30

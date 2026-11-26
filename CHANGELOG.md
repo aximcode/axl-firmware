@@ -18,7 +18,8 @@ for real hardware. Everything else is as in r2.
   order (a `bootindex`), so it has its EFI_SERIAL_IO without a `connect -r`.
 - **Console and input fixes** (r3 console):
   - `0006-ps2-mouse-sio.patch`: X64's PS/2 mouse works: SioBusDxe gains a
-    PNP0F03 child, so Ps2MouseDxe binds (`Acpi(PNP0F03,0x0)`); QEMU sends it
+    PNP0F13 child (the HID QEMU's DSDT gives it), so Ps2MouseDxe binds
+    (`Acpi(PNP0F13,0x0)`); QEMU sends it
     events while no USB or virtio mouse is its active one.
   - `0007-shell-ctrl-s.patch`: a serial Ctrl-S (0x13) pauses the Shell's
     output, and the next key resumes it, as a keyboard's Ctrl-S does (in

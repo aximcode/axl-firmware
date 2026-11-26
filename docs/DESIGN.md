@@ -675,14 +675,19 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
     - *0006, the PS/2 mouse on q35* (OvmfPkg `SioBusDxe/SioService.c`).
       SioBusDxe's table had COM1, COM2 and the keyboard (PNP0303, UID 0);
       Ps2MouseDxe binds only PNP0F03, PNP0F13, or PNP0303 UID 1, so it never
-      bound. The patch appends PNP0F03, UID 0, on the keyboard's ports
+      bound. The patch appends PNP0F13, UID 0, on the keyboard's ports
       (0x60, 0x64); the existing children keep their indices and paths. X64
       only (ArmVirtQemu has no SioBusDxe nor PS/2). Measured, no USB or
       virtio mouse, three HMP `mouse_move 10 5`: r2 has no SimplePointer
-      with a device path; r3 has
+      with a device path; the console branch's r3 (PNP0F03, as the
+      inventory named it) had
       `PciRoot(0x0)/Pci(0x1F,0x0)/Acpi(PNP0F03,0x0)` (ResolutionZ 0), whose
-      states sum to x 30, y 15. QEMU's DSDT names the mouse PNP0F13
-      (`hw/input/pckbd.c`); the inventory's PNP0F03 is kept (§5 item 9).
+      states sum to x 30, y 15. *PNP0F13 from integration* (owner,
+      2026-11-26, §5 item 9): QEMU's DSDT names the mouse PNP0F13
+      (`hw/input/pckbd.c`, `aml_eisaid("PNP0F13")`), so 0006 now does too;
+      the reproducer now requires `Acpi(PNP0F13,0x0)`, RED on the console
+      branch's build (`Acpi(PNP0F03,0x0)`, sums 30, 15, 0: NOT FIXED) and
+      GREEN on the integrated build (§4.39's table).
       OVMF's BDS connects it only without a QEMU boot order, and QEMU sends
       it events only while it is the active mouse (CONSUMERS.md).
     - *0007, serial Ctrl-S* (ShellPkg `ShellProtocol.c`, `ConsoleLogger.c`;
@@ -1248,7 +1253,8 @@ discovery, for example axlvmpool's `axlvmpool firmware`), and any QEMU change.
    build job uploaded (no second edk2 build), and states `sysctl
    kernel.io_uring_disabled` (0) and QEMU's version, as the build job does.
 9. **The PS/2 mouse's HID: PNP0F03 or PNP0F13** (raised 2026-11-25 by the
-   builder of 0006, §4.28). The inventory and the brief named PNP0F03
+   builder of 0006, §4.28; **decided** by the owner 2026-11-26: PNP0F13,
+   changed in 0006 at integration). The inventory and the brief named PNP0F03
    (Microsoft PS/2-style mouse), which 0006 uses; QEMU's own DSDT gives
    the i8042 mouse `_HID` PNP0F13 (PS/2 port for PS/2-style mice,
    `hw/input/pckbd.c`), as the keyboard's PNP0303 matches its DSDT entry.
